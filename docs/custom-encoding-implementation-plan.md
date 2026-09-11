@@ -217,6 +217,39 @@ overrides = { "legacy/**/*.txt" = "gbk", "*.csv" = "gbk" }
 
 **信任说明**：`hunk.config` 会被仓库级 config 覆盖（不可信输入）。编码选择只影响**显示**，不涉及命令执行/路径拼接，风险可控；但文档中仍需声明，避免未来把编码名用于拼路径等 exec 决策。
 
+## 7.1 使用范围：零配置开箱即用 / 需要 minimal 配置 / 处理不了
+
+### A. 零配置开箱即用（装完扩展即可，日常零操作）
+
+判定逻辑：每个文件独立探测（BOM → 严格 UTF-8 校验 → 候选列表顺序），以下场景全部自动覆盖：
+
+- **UTF-8 仓库**：严格校验直通，扩展完全透明，无任何行为差异；
+- **UTF-8 + 单一非 UTF-8 编码混合仓库**（最常见，如一半 UTF-8 一半 GBK）：UTF-8 文件直通，非 UTF-8 文件按默认候选列表 `["gbk", "big5", "shift_jis"]` 解码，不需要任何配置；
+- 单一非 UTF-8 编码仓库（如纯 GBK / 纯 Shift-JIS / 纯 Big5），只要该编码**在默认候选列表内且顺序与仓库主导编码一致**；
+- 以上场景下的完整功能面：`hunk diff`（工作区 + 暂存 + untracked）、`readFileSource` 驱动的上下文展开 / 行内高亮 / word-diff，以及 M3 之后的 `hunk show` / `hunk stash show` / `--watch`。
+
+### B. 需要 minimal 配置的使用范围（一次性调优）
+
+需要写 `[extension.hunk-custom-encoding]` 配置，但仅需数行、且与仓库绑定后可长期复用：
+
+| 场景 | 配置做法 |
+| --- | --- |
+| 仓库同时混有 **≥2 种不同的非 UTF-8 编码**（如 GBK + Big5 + Shift-JIS 并存） | `overrides` 按路径 glob 钉死每个目录/文件的编码——候选列表的顺序无法可靠区分重叠的 CJK 编码 |
+| 目标编码**不在默认候选列表**（如 EUC-KR、ISO-8859-1、EUC-JP 之外的小众编码） | 加入 `encodings` 列表（白名单校验） |
+| 默认候选顺序与仓库**主导编码不符**（如纯 Big5 仓库、默认 gbk 排第一导致误判） | 调整 `encodings` 顺序，或对相关路径写 `overrides` |
+
+> 以上均为**一次性**动作：配置写在用户级 `~/.config/hunk/config.toml`（全局生效）或仓库级 `.hunk/config.toml`（随仓库分发，团队共享）。仓库级配置会被 Hunk 作为不可信输入处理，但本扩展的配置只影响显示，不涉及 exec。
+
+### C. 完全处理不了的使用范围（需要扩展之外的动作或替代方案）
+
+| 场景 | 用户需要做什么 | 是否可被扩展解决 |
+| --- | --- | --- |
+| `hunk patch foo.diff` 审查**外部生成的非 UTF-8 patch 文件** | 先 `iconv -f gbk -t utf-8 foo.diff` 转码，或改走 `hunk diff` 审 git 仓库 | **否**——patch 文件读取不经 VCS 适配器，`registerCliCommand` 也不能覆盖内置 `patch` 命令，无扩展钩子 |
+| `hunk log` 交互式历史审查 | 本计划不实现 `history` capability，报"不支持"；改用 `hunk show <rev>` | 可补——在 M3 增加 `history` capability 即闭环（复用同一转码管线） |
+| jj / Sapling 仓库中的非 UTF-8 文件 | 在 git 仓库中审查，或等待 jj / sl 变体扩展 | **否（当前）**——适配器只 detect `.git`；后续可另注册 jj / sl 包装适配器 |
+| UTF-16 文件 | git 把含 NUL 的字节当二进制，显示 binary 占位（无乱码也无文本 diff）；需在仓库配 `.gitattributes`（如 `working-tree-encoding=UTF-16`）让 git 当作文本输出 | 部分——UTF-16 被 git 判为二进制时扩展无字节可读；需 git 侧配合 |
+| `--no-extensions` 或扩展加载失败 | 回到内置 git 适配器，乱码复现 | 否——这是 Hunk 的故障隔离语义，本扩展不改变 |
+
 ## 8. 兼容性、风险与待确认事项
 
 ### R1（必须先做）：复刻内置 git 适配器的命令行为
@@ -252,10 +285,19 @@ UTF-8 段走严格校验直通，快速路径保证无额外开销、无行为�
 - 大 patch（> 若干 MiB）沿用 github-pr 示例的字节上限读法（`readBoundedResponse` 风格），防止内存爆炸；
 - `sourceCacheKey` 让精确源的高亮结果可跨 reload 复用。
 
+### 类型来源（已确认，无需手写桩）
+
+`hunkdiff` npm 包（`npm i -g hunkdiff` 即 Hunk 本体，官方仓库 `modem-dev/hunk`）**官方发布扩展类型**：
+
+- 包 `exports` 提供 `"./extension": { "types": "./dist/npm/extension/index.d.ts", ... }`，即 `import ... from "hunkdiff/extension"` 可直接解析到官方声明；
+- 声明内容完整：`ExtensionVcsAdapter`、`ExtensionVcsPatchResult`、`ExtensionVcsFileSourceReader`、`HUNK_VCS_DETECTION_BASELINE_PRIORITY`、`HunkExtensionUserError` 等全部公开面均已导出（经 unpkg 抽查 v0.22.0 确认）；
+- 官方仓库的 `tsconfig.extension.json` 从 `packages/hunk/src/extension-api/index.ts` 发射这些声明，随版本保持同步。
+
+**结论（已实施）：vendored 类型，零运行时依赖。** 仅拷贝官方发布声明中真正需要的 `dist/npm/extension/`（约 117K）到仓库 `types/hunkdiff-extension/`，并在 tsconfig 用 `paths` 把 `hunkdiff/extension` 映射到该目录。理由：`hunkdiff` npm 包会连带下载完整 hunk 二进制（约 117MB）与自动安装 peer 依赖（`@opentui/*`、`react`、`@pierre/diffs` 等合计约 100MB），而本扩展运行时 `hunkdiff/extension` 由 host 提供虚拟模块（Bun loader hook 重写 specifier），devDependency 只服务类型检查——直接 vendored 类型最干净。本扩展为纯 VCS 适配器，不涉及 pane/JSX，无需 `react` / `@opentui/*` 类型。版本对齐策略：`types/hunkdiff-extension/` 顶部注释记录来源版本；升级 hunk 时重新拷贝该目录即可（可用 `bun add --no-save hunkdiff` + `cp` 或直接改注释手动同步），代码保留 `hunk.apiVersion` 分支。`bunfig.toml` 的 `[install] optional = false` 保留，防止未来误装平台二进制。
+
 ### 其他待确认
 
 - `package.json` 当前存在 JSON 语法错误（`"hunk"` 块后缺逗号），会阻断 `bun install` 与发现加载，**开工第一件事修掉**，并补 `"hunk": { "extensions": [...], "apiVersion": 25 }` 声明。
-- 本工作区无 `hunkdiff/extension` 类型包，开发期需要 `hunk` 本体或从文档手写类型桩；确认 `hunk.dev` 是否提供发布类型。
 
 ## 9. 测试计划
 
@@ -287,7 +329,7 @@ UTF-8 段走严格校验直通，快速路径保证无额外开销、无行为�
 
 | 阶段 | 内容 | 验收 |
 | --- | --- | --- |
-| M0 | 修 package.json、补 apiVersion、搭类型桩 | `bun install` 通过，扩展能被发现 |
+| M0 | 修 package.json、补 apiVersion、vendored 官方类型（`types/hunkdiff-extension/` + tsconfig `paths`） | `bun install` 通过，扩展能被发现，`import ... from "hunkdiff/extension"` 类型检查通过，node_modules 无 hunkdiff/opentui/react 残留 |
 | M1 | `transcode.ts` + `patch.ts` + 单测 | 纯函数单测全绿 |
 | M2 | `git.ts` + `working-tree-diff` 适配器 + `readFileSource` + untracked(extraFiles) | GBK fixture 仓库 `hunk diff` 无乱码；UTF-8 仓库无回归 |
 | M3 | `revision-show` / `stash-show` / `watchSignature` / `colorMoved` | 对应命令验证通过 |
