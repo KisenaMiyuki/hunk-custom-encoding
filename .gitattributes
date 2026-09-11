@@ -1,0 +1,2 @@
+# Store text files as LF in the repository and check them out as CRLF.
+* text=auto eol=crlf
