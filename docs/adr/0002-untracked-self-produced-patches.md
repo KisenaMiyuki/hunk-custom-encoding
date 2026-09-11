@@ -1,0 +1,3 @@
+# untracked 文件走 extraFiles 自产 diff，而非 untrackedPaths
+
+内置 git 适配器用 `untrackedPaths` 让 Hunk 宿主合成 added-file diff，宿主直接按 UTF-8 读工作区文件——非 UTF-8 的 untracked 文件会乱码复现。本扩展改用 `extraFiles`：对每个 untracked 文件执行 `git diff --no-index /dev/null <file>`（带内置同款 prefix 归一化参数，已验证 Windows 可用），把产出 patch 喂进同一转码管线。这正是 `extraFiles` 的 API 语义（"你的 VCS 产出比直接读工作区更好的 patch 文本时用它"）；`untrackedPaths` 的合成路径绕不开 UTF-8 解码。二进制 untracked 文件产出含 `Binary files ... differ` 的 patch 让 Hunk 渲染占位，>1MB 或 >20k 行则报 `skipped`。

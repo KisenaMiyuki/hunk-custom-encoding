@@ -1,0 +1,3 @@
+# 忠实复刻内置 git 适配器的命令语义
+
+本适配器 detect 命中即全面接管 git 仓库（优先级高于内置），因此必须逐位复刻内置 git 适配器的行为，包括看似"反直觉"的地方：无 range 的 working-tree 基准是 `git diff`（index↔worktree）而非 `git diff HEAD`；`-c core.quotePath=true`（非 ASCII 路径八进制转义）而非 `quotePath=false`；untracked 用 `git status --porcelain=v1 -z --untracked-files=all` 而非 `ls-files --others`；大文件跳过用 numstat 预扫描（>20k 行或 >1MB）；`watchSignature` 是转码后 patch 文本 + untracked stat 签名；colorMoved 用 `--color=always --color-moved=<mode>` 透传 ANSI 而非剥色。任何偏离都会让用户看到的 diff 与内置不一致，属于"改了就是修坏了"的假 bug。内置行为已对照 0.21.1 与 0.22.0 源码逐条核实并记入实现计划 §8。

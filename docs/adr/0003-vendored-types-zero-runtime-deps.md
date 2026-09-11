@@ -1,0 +1,3 @@
+# 零运行时依赖 + vendored 类型声明
+
+官方 `hunkdiff` npm 包会连带下载约 117MB 的 hunk 二进制与约 100MB 的 peer 依赖（`@opentui/*`、`react`、`@pierre/diffs`）。本扩展运行时 `hunkdiff/extension` 由 Hunk 宿主以虚拟模块提供，`devDependencies` 里的依赖只服务类型检查。决定：不引入任何运行时依赖，仅把官方发布的 `dist/npm/extension/` 类型声明（约 117K）vendored 到 `types/hunkdiff-extension/`，用 tsconfig `paths` 映射 `hunkdiff/extension`，`bunfig.toml` 设 `[install] optional = false`。升级 hunk 时重新拷贝该目录并在顶部注释记录来源版本；代码保留 `hunk.apiVersion` 分支。
