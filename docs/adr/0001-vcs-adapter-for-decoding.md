@@ -1,0 +1,3 @@
+# 用包装 Git 的 VCS 适配器在解码环节修复非 UTF-8
+
+Hunk 把 git patch 按 UTF-8 非 fatal 解码，GBK 等字节在到达 `transformChangeset` 之前已变成不可逆的 `U+FFFD` 替换符（已对照源码确认：内置适配器用 `Response.text()` / `Buffer.toString("utf8")` 解码）。因此本扩展注册一个优先级高于内置 git 的包装适配器，以二进制运行 git、按文件分段、逐内容行重编码为 UTF-8 后再交给 Hunk。`transformChangeset`、`registerFileView`、`registerLineHighlighter` 等被否决，因为它们要么只能看到字节已丢失的解析结果，要么是纯绘制层——唯一能控制 patch 字节流到文本的入口是 `registerVcsAdapter` 的 `patchText`。
