@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "scoped-commit": {
+      "source": "KisenaMiyuki/my-skills",
+      "sourceType": "github",
+      "skillPath": "skills/scoped-commit/SKILL.md",
+      "computedHash": "d3cd667fe6d9406eb0c6df84cf94c70aabf1c51d210939c5c73059f21f98428d"
+    }
+  }
+}
