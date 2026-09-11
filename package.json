@@ -2,7 +2,7 @@
   "name": "hunk-custom-encoding",
   "hunk": {
     "extensions": ["index.ts"]
-  }
+  },
   "module": "index.ts",
   "type": "module",
   "private": true,
