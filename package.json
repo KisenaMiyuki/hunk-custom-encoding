@@ -1,7 +1,8 @@
 {
   "name": "hunk-custom-encoding",
   "hunk": {
-    "extensions": ["index.ts"]
+    "extensions": ["index.ts"],
+    "apiVersion": 25
   },
   "module": "index.ts",
   "type": "module",

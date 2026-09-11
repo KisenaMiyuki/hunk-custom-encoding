@@ -1,0 +1,5 @@
+# Skip optional platform binaries (e.g. the hunkdiff native binary).
+# We only need the published `hunkdiff/extension` type declarations;
+# at runtime the host serves that module to the extension.
+[install]
+optional = false
