@@ -356,11 +356,11 @@ UTF-8 段走严格校验直通，快速路径保证无额外开销、无行为�
 
 **结论：vendored 类型，零运行时依赖。** 仅拷贝官方发布声明中真正需要的 `dist/npm/extension/`（约 117K）到仓库 `types/hunkdiff-extension/`，并在 tsconfig 用 `paths` 把 `hunkdiff/extension` 映射到该目录。理由：`hunkdiff` npm 包会连带下载完整 hunk 二进制（约 117MB）与自动安装 peer 依赖（`@opentui/*`、`react`、`@pierre/diffs` 等合计约 100MB），而本扩展运行时 `hunkdiff/extension` 由 host 提供虚拟模块（Bun loader hook 重写 specifier），devDependency 只服务类型检查——直接 vendored 类型最干净。本扩展为纯 VCS 适配器，不涉及 pane/JSX，无需 `react` / `@opentui/*` 类型。版本对齐策略：`types/hunkdiff-extension/` 顶部注释记录来源版本；升级 hunk 时重新拷贝该目录即可，代码保留 `hunk.apiVersion` 分支。`bunfig.toml` 的 `[install] optional = false` 保留，防止未来误装平台二进制。
 
-### 里程碑现状（M0 大部分已完成）
+### 里程碑现状（M0 验收完成，M1 已落地 2026-09-12）
 
-- `package.json` 的 JSON 语法错误**已修复**（提交 `0e58a62`），`"hunk": { "extensions": ["index.ts"], "apiVersion": 25 }` 已就位；
-- vendored 官方类型已落地（提交 `5468982`，`types/hunkdiff-extension/` + tsconfig `paths`）；
-- 剩余：`index.ts` 仍是 hello world，需写入真实入口（注册适配器 + 读配置）。
+- **M0 验收结果**：`package.json` 已修复（提交 `0e58a62`，`"hunk": { "extensions": ["index.ts"], "apiVersion": 25 }`）；vendored 官方类型已落地（提交 `5468982`，`types/hunkdiff-extension/` + tsconfig `paths`）；`bun install` 通过、node_modules 无 hunkdiff/opentui/react 残留、`hunkdiff/extension` 类型检查通过（`tsc` 仅剩 `examples/` 模板示例的 JSX 报错，属初始模板内容、与本扩展无关）。剩余项：`index.ts` 仍是 hello world——真实入口需要 `git.ts` 与适配器才有可注册内容，随 M2 落地。
+- **M1 已落地**：`src/config.ts`（canonical 白名单表 + overrides 斜杠启发式 glob 编译/最长匹配 + 校验与 notify）、`src/transcode.ts`（六层探测链 + 转码 + TextDecoder 实例池 + ANSI 剥离 + ASCII 快速路径）、`src/patch.ts`（按 `diff --git`/`diff --cc` 分段 + 逐内容行转码 + 二进制/combined 透传 + `\ No newline` 保留）。`bun run test`（= `bun test test/`，避开模板 examples）51 用例全绿。
+- **实测修正（Bun 1.3.13）**：`new TextDecoder("gbk").encoding` 返回 `"gbk"` 而非 WHATWG 规范名 `"gb18030"`——canonical 归一改用自维护映射表（见 `src/config.ts`），`"gbk"/"gb2312"/"gb18030"` 统一为 `"gbk"`，`"latin1"/"iso-8859-1"` → `"windows-1252"`，`"cp866"` → `"ibm866"`；Big5「體」实测为 `C5 E9`。
 
 ## 9. 测试计划
 
