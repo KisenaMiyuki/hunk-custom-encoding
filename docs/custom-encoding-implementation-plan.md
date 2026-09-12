@@ -198,13 +198,14 @@ load(input, ctx):
            -c diff.srcPrefix=a/ -c diff.dstPrefix=b/ \
            diff --no-ext-diff --find-renames --no-color [--staged] [<range>] [-- <pathspecs> ... :(exclude)...]
   4. patch.ts 分段重编码 → patchText
-  5. untracked（复刻内置 gating：staged 或 excludeUntracked 或无 range 解析为恰一正 rev 时跳过）：
-       git --no-optional-locks status --porcelain=v1 -z --untracked-files=all [-- <pathspecs>]
-       解析 `?? ` 条目 → 逐个：大小 >1MB 或行数 >20k → { kind:"skipped", path, reason:"too-large", isUntracked:true }
-       否则 git diff --no-index /dev/null <file>（带 prefix 归一化参数）→ 同一转码管线
-       → extraFiles [{ kind:"patch", path, patchText: 自产转码 diff, isUntracked: true }]
-       ⚠ 不用 untrackedPaths：宿主合成 added-file diff 时自行读工作区文件，
-         会再次按 UTF-8 解码，乱码复现（ADR-0002）
+   5. untracked（gating 已对照内置源码核实 2026-09，`isWorkingTreeGitDiffInput`：**新侧为 worktree 时包含**——无 range，或 range 经 `git rev-parse --revs-only` 解析为恰一正 rev 且无负 rev（单 rev、`A..`）；staged / `A..B` / `A...B` / rangeEndpoints / `excludeUntracked` 时跳过；此外按内置 `isReviewableUntrackedPath` 过滤目录与目录符号链接）：
+        git --no-optional-locks status --porcelain=v1 -z --untracked-files=all [-- <pathspecs>]
+        解析 `?? ` 条目 → 逐个：大小 >1MB 或行数 >20k → { kind:"skipped", path, reason:"too-large", isUntracked:true }
+        否则 git diff --no-index /dev/null <file>（带 prefix 归一化参数）→ 同一转码管线
+        → extraFiles [{ kind:"patch", path, patchText: 自产转码 diff, isUntracked: true }]
+        ⚠ 不用 untrackedPaths：宿主合成 added-file diff 时自行读工作区文件，
+          会再次按 UTF-8 解码，乱码复现（ADR-0002）；0.22.0 内置已改走 untrackedPaths，
+          本扩展维持 extraFiles 自产 diff（编码差异所致，见 ADR-0002）
   6. 返回 { repoRoot, sourceLabel, title, patchText, extraFiles, sourceCacheKey }
 ```
 
@@ -231,7 +232,7 @@ readFileSource: async ({ path, previousPath, changeType, side, isUntracked }, ct
 
 - **按 (path, side) 独立探测编码**（Q9）：old 从 blob 字节、new 从 index/worktree 字节各自 `detectEncoding`，不共享结果——跨版本改编码的文件两侧各自正确。
 - 探测复用 `transcode.ts`；返回 UTF-8 字符串，供 Hunk 做上下文展开、行内高亮与 word-diff。
-- `sourceCacheKey`（复刻内置 + 追加编码，Q9）：`git-source-v1:<old端key>:<old编码>:<new端key>:<new编码>`，其中端 key 为 `ref:<ref>` / `index:<sha256(git ls-files --stage -z)>` / `worktree` / `none`。编码进了 key，配置变更自然失效高亮缓存。
+- `sourceCacheKey`（复刻内置 + 追加编码配置指纹，Q9）：`git-source-v1:<old端key>:<编码指纹>:<new端key>:<编码指纹>`，其中端 key 为 `ref:<解析后完整 sha>` / `index:<sha256(git ls-files --stage -z)>` / `worktree` / `none`。**实现修正**：单侧"所用编码"在混合仓库中不存在（逐文件探测），故 5 段中的编码槽位放**编码配置指纹**（`sha256(JSON.stringify({encodings, fallback, overrides}))` 取 12 hex）——任何编码配置变更都会更换 key，配置热更新自动失效高亮缓存，语义上严格强于逐侧单编码。
 
 ### 6.3 `revision-show`（M3）
 
@@ -356,10 +357,12 @@ UTF-8 段走严格校验直通，快速路径保证无额外开销、无行为�
 
 **结论：vendored 类型，零运行时依赖。** 仅拷贝官方发布声明中真正需要的 `dist/npm/extension/`（约 117K）到仓库 `types/hunkdiff-extension/`，并在 tsconfig 用 `paths` 把 `hunkdiff/extension` 映射到该目录。理由：`hunkdiff` npm 包会连带下载完整 hunk 二进制（约 117MB）与自动安装 peer 依赖（`@opentui/*`、`react`、`@pierre/diffs` 等合计约 100MB），而本扩展运行时 `hunkdiff/extension` 由 host 提供虚拟模块（Bun loader hook 重写 specifier），devDependency 只服务类型检查——直接 vendored 类型最干净。本扩展为纯 VCS 适配器，不涉及 pane/JSX，无需 `react` / `@opentui/*` 类型。版本对齐策略：`types/hunkdiff-extension/` 顶部注释记录来源版本；升级 hunk 时重新拷贝该目录即可，代码保留 `hunk.apiVersion` 分支。`bunfig.toml` 的 `[install] optional = false` 保留，防止未来误装平台二进制。
 
-### 里程碑现状（M0 验收完成，M1 已落地 2026-09-12）
+### 里程碑现状（M0/M1/M2 已落地，2026-09-12）
 
-- **M0 验收结果**：`package.json` 已修复（提交 `0e58a62`，`"hunk": { "extensions": ["index.ts"], "apiVersion": 25 }`）；vendored 官方类型已落地（提交 `5468982`，`types/hunkdiff-extension/` + tsconfig `paths`）；`bun install` 通过、node_modules 无 hunkdiff/opentui/react 残留、`hunkdiff/extension` 类型检查通过（`tsc` 仅剩 `examples/` 模板示例的 JSX 报错，属初始模板内容、与本扩展无关）。剩余项：`index.ts` 仍是 hello world——真实入口需要 `git.ts` 与适配器才有可注册内容，随 M2 落地。
-- **M1 已落地**：`src/config.ts`（canonical 白名单表 + overrides 斜杠启发式 glob 编译/最长匹配 + 校验与 notify）、`src/transcode.ts`（六层探测链 + 转码 + TextDecoder 实例池 + ANSI 剥离 + ASCII 快速路径）、`src/patch.ts`（按 `diff --git`/`diff --cc` 分段 + 逐内容行转码 + 二进制/combined 透传 + `\ No newline` 保留）。`bun run test`（= `bun test test/`，避开模板 examples）51 用例全绿。
+- **M0 验收结果**：`package.json` 已修复（提交 `0e58a62`，`"hunk": { "extensions": ["index.ts"], "apiVersion": 25 }`）；vendored 官方类型已落地（提交 `5468982`，`types/hunkdiff-extension/` + tsconfig `paths`）；`bun install` 通过、node_modules 无 hunkdiff/opentui/react 残留、`hunkdiff/extension` 类型检查通过（`tsc` 仅剩 `examples/` 模板示例的 JSX 报错，属初始模板内容、与本扩展无关）。`index.ts` 真实入口已随 M2 写入。
+- **M1 已落地**：`src/config.ts`（canonical 白名单表 + overrides 斜杠启发式 glob 编译/最长匹配 + 校验与 notify）、`src/transcode.ts`（六层探测链 + 转码 + TextDecoder 实例池 + ANSI 剥离 + ASCII 快速路径）、`src/patch.ts`（按 `diff --git`/`diff --cc` 分段 + 逐内容行转码 + 二进制/combined 透传 + `\ No newline` 保留）。`bun run test`（= `bun test test/`，避开模板 examples）全绿。
+- **M2 已落地**：`src/git.ts`（字节模式 spawn + 参数组装 + 错误翻译，逐位复刻内置 `commands.ts`）、`src/endpoints.ts`（`resolveGitDiffEndpoints` 复刻：staged HEAD^{commit}/none、单正 rev→worktree、`A..B`、`A...B` merge-base、多 rev → null）、`src/adapter.ts`（numstat 大文件跳过、untracked 自产 diff、readFileSource 按 (path, side) 独立探测 + 编码配置指纹进 cacheKey）、`index.ts` 入口（注册适配器 + 解析 `[extension.hunk-custom-encoding]` 配置）。**untracked gating 与 cacheKey 形状已按内置源码核实修正**（见 §6.1/§6.2）；`test/git.test.ts` 纯函数 + `test/adapter.integration.test.ts`（真 fixture 仓库，GBK/SJIS/Big5/二进制/untracked/staged/range/rangeEndpoints/Q9 双侧探测/UTF-8 基线逐字节一致）全绿，共 104 用例。
+- **测试基建**：`test/runtime.ts` + bunfig `[test] preload` 用 Bun plugin 把 `hunkdiff/extension` 映射到 vendored 官方运行时（host 之外的测试环境替身，`HunkExtensionUserError` 行为一致）。
 - **实测修正（Bun 1.3.13）**：`new TextDecoder("gbk").encoding` 返回 `"gbk"` 而非 WHATWG 规范名 `"gb18030"`——canonical 归一改用自维护映射表（见 `src/config.ts`），`"gbk"/"gb2312"/"gb18030"` 统一为 `"gbk"`，`"latin1"/"iso-8859-1"` → `"windows-1252"`，`"cp866"` → `"ibm866"`；Big5「體」实测为 `C5 E9`。
 
 ## 9. 测试计划
