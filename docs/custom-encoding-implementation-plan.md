@@ -359,7 +359,7 @@ UTF-8 段走严格校验直通，快速路径保证无额外开销、无行为�
 
 - **宿主环境要求（2026-09-12 实测）**：扩展需要提供 extension API **v25** 的宿主（对应 hunkdiff@0.22.0 的 JS 产物）。注意：npm `hunkdiff-windows-x64@0.22.0` 的预编译 `hunk.exe` 是**陈旧构建**——二进制自称 0.21.1、内嵌 `HUNK_EXTENSION_API_VERSION = 16`（`hunkdiff@0.22.0-beta.1` 的二进制也是 v24），与同包 v25 的 `dist/npm/` 资产错位（上游打包 bug，建议向 modem-dev/hunk 报告）。变通：把 `~/.bun/install/global/node_modules/hunkdiff-windows-x64` 改名（如 `hunkdiff-windows-x64.stale-v16-binary`），官方 bin shim 会回退到 `bun dist/npm/main.js`（内嵌 API = 25）运行宿主；`hunk --version` 应显示 0.22.0。已实测：`hunk diff` 正常加载扩展，GBK 文件显示 `- 旧内容 / + 新内容`，无 U+FFFD。上游修复后可还原目录名或直接升级。
 
-**JS 宿主的 peer 依赖要求**：从 `dist/npm/main.js` 运行宿主时，`@opentui/core` 等peer 需满足 hunkdiff@0.22.0 的 `^0.5.6`。若全局残留旧 peer（如 0.5.4），OpenTUI 初始化会报 `Symbol "createEmbeddedTerminal" not found`（0.5.4 的 DLL 无此导出）。修复：`bun add -g @opentui/core@0.5.11 @opentui/react@0.5.11`（0.5.x 最新，DLL 实测含该符号），`@pierre/diffs@1.3.5` / `react@^19.2.4` 保持满足即可。
+**JS 宿主的 peer 依赖要求**：从 `dist/npm/main.js` 运行宿主时，`@opentui/core` 等peer 需满足 hunkdiff@0.22.0 的 `^0.5.6`。若全局残留旧 peer（如 0.5.4），OpenTUI 初始化会报 `Symbol "createEmbeddedTerminal" not found`（0.5.4 的 DLL 无此导出）。修复：`bun add -g @opentui/core@0.5.11 @opentui/react@0.5.11`（0.5.x 最新，DLL 实测含该符号），`@pierre/diffs@1.3.5` / `react@^19.2.4` 保持满足即可。查重（2026-09-12，open+closed）：以 `windows` / `opentui` / `apiVersion` / `"extension API"` / `hunkdiff-windows` / `createEmbeddedTerminal` 检索 modem-dev/hunk 均无重复报告，可安全提 issue（草稿见对话记录）。
 
 ### 里程碑现状（M0/M1/M2 已落地，2026-09-12）
 
