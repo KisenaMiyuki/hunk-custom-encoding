@@ -3,3 +3,8 @@
 # at runtime the host serves that module to the extension.
 [install]
 optional = false
+
+# `bun test` has no Hunk host to serve `hunkdiff/extension`; map the
+# specifier to the vendored official runtime so adapter code runs as-is.
+[test]
+preload = ["./test/runtime.ts"]

@@ -65,6 +65,18 @@ export function isPureAscii(bytes: Uint8Array): boolean {
 }
 
 /**
+ * Git's binary heuristic: any NUL byte in the leading 8000 bytes (plan §6.2 —
+ * binary sources are declined instead of transcoded).
+ */
+export function isLikelyBinary(bytes: Uint8Array): boolean {
+  const limit = Math.min(bytes.length, 8000);
+  for (let i = 0; i < limit; i++) {
+    if (bytes[i] === 0) return true;
+  }
+  return false;
+}
+
+/**
  * Remove ANSI CSI escape sequences (`ESC [ … final`) so colorMoved output
  * does not pollute the probe bytes (plan §4.7). Pure-ASCII input is
  * returned as-is.
