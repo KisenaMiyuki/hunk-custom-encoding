@@ -357,6 +357,8 @@ UTF-8 段走严格校验直通，快速路径保证无额外开销、无行为�
 
 **结论：vendored 类型，零运行时依赖。** 仅拷贝官方发布声明中真正需要的 `dist/npm/extension/`（约 117K）到仓库 `types/hunkdiff-extension/`，并在 tsconfig 用 `paths` 把 `hunkdiff/extension` 映射到该目录。理由：`hunkdiff` npm 包会连带下载完整 hunk 二进制（约 117MB）与自动安装 peer 依赖（`@opentui/*`、`react`、`@pierre/diffs` 等合计约 100MB），而本扩展运行时 `hunkdiff/extension` 由 host 提供虚拟模块（Bun loader hook 重写 specifier），devDependency 只服务类型检查——直接 vendored 类型最干净。本扩展为纯 VCS 适配器，不涉及 pane/JSX，无需 `react` / `@opentui/*` 类型。版本对齐策略：`types/hunkdiff-extension/` 顶部注释记录来源版本；升级 hunk 时重新拷贝该目录即可，代码保留 `hunk.apiVersion` 分支。`bunfig.toml` 的 `[install] optional = false` 保留，防止未来误装平台二进制。
 
+- **宿主环境要求（2026-09-12 实测）**：扩展需要提供 extension API **v25** 的宿主（对应 hunkdiff@0.22.0 的 JS 产物）。注意：npm `hunkdiff-windows-x64@0.22.0` 的预编译 `hunk.exe` 是**陈旧构建**——二进制自称 0.21.1、内嵌 `HUNK_EXTENSION_API_VERSION = 16`（`hunkdiff@0.22.0-beta.1` 的二进制也是 v24），与同包 v25 的 `dist/npm/` 资产错位（上游打包 bug，建议向 modem-dev/hunk 报告）。变通：把 `~/.bun/install/global/node_modules/hunkdiff-windows-x64` 改名（如 `hunkdiff-windows-x64.stale-v16-binary`），官方 bin shim 会回退到 `bun dist/npm/main.js`（内嵌 API = 25）运行宿主；`hunk --version` 应显示 0.22.0。已在 GBK 试验仓库实测：`hunk diff` 正常加载扩展，GBK 文件显示 `- 旧内容 / + 新内容`，无 U+FFFD。上游修复后可还原目录名或直接升级。
+
 ### 里程碑现状（M0/M1/M2 已落地，2026-09-12）
 
 - **M0 验收结果**：`package.json` 已修复（提交 `0e58a62`，`"hunk": { "extensions": ["index.ts"], "apiVersion": 25 }`）；vendored 官方类型已落地（提交 `5468982`，`types/hunkdiff-extension/` + tsconfig `paths`）；`bun install` 通过、node_modules 无 hunkdiff/opentui/react 残留、`hunkdiff/extension` 类型检查通过（`tsc` 仅剩 `examples/` 模板示例的 JSX 报错，属初始模板内容、与本扩展无关）。`index.ts` 真实入口已随 M2 写入。
