@@ -21,7 +21,7 @@
 | Q7 | 集成测试 | **adapter 层 in-process**：直接调用 `load()`/`readFileSource()` 断言；PTY e2e 降为手工清单 |
 | Q8 | 探测兜底 | **双级兜底**：候选失败 → `fallback`（默认 gbk）→ `latin1`（永不抛错，保证有输出） |
 | Q9 | readFileSource 探测 | **按 (path, side) 独立探测**；`sourceCacheKey` 追加所用编码 |
-| Q10 | `diff --cc`（merge） | **v1 识别但原样透传**（不转码），记为 M4+ 增强 |
+| Q10 | `diff --cc`（merge） | **M4 已实现转码**：识别 `@@@` 头与双符号列内容行（真实 git 输出恒为两列，如 `- 主内容`/`++合并`），按段探测逐行转码；ASCII 段仍逐字节一致 |
 | Q11 | overrides glob target | **斜杠启发式**：glob 含 `/` → path target，否则 → basename |
 | Q12 | 编码白名单 | **硬编码 legacy 白名单 + 运行时 `new TextDecoder` 构造验证**（基于 Bun 1.3.13 实测支持集） |
 | Q13 | range/rangeEndpoints | **M2 完整复刻**：range 透传 + `from..to` + `A...B` merge-base 端点解析（适配器全面接管，这些命令必须可用） |
@@ -131,7 +131,7 @@ hunk-custom-encoding/
 3. **二进制段跳过**。`Binary files a/... and b/... differ` 与 `GIT binary patch` 段不做任何转码，Hunk 按既有 binary 占位渲染。
 4. **纯 ASCII 快速路径**。某段字节全部 < 0x80 时直接透传，零开销。
 5. **子模块段**（`Subproject commit ...`）与**纯 mode 变更段**（`old mode`/`new mode`）为 ASCII，自然走快速路径。
-6. **combined 段（`diff --cc`/`diff --combined`）**：v1 识别但**原样透传不转码**（Q10）。merge commit 的 `hunk show` 场景少见，`@@@` 头与双前缀内容行的转码记为 M4+ 增强。
+6. **combined 段（`diff --cc`/`diff --combined`）**：M4 起转码（Q10 已落地）——双符号列分类器（前导 ANSI 剥离后两列各为 + - 空格，` No newline` 单反斜杠），段探测与普通段同链。真实 git 输出恒为两列符号列（实测）；畸形单列行按防御性透传处理。
 7. **colorMoved（M3）**：内容行可能是 `\x1b[36m+...\x1b[m` 形态。GBK/Big5/Shift-JIS/EUC-JP 全是 ASCII 兼容超集（单字节区 0x00-0x7F 恒等），**整行按文件编码解码时 ANSI 转义序列天然保持原样**，无需剥色/还原（Q4）。编码探测时跳过 `\x1b[...m` 序列再取内容字节。
 
 ## 5. 编码探测策略
@@ -255,7 +255,7 @@ readFileSource: async ({ path, previousPath, changeType, side, isUntracked }, ct
 ### 6.6 不支持面
 
 - `history`（`hunk log` 交互）：不实现（Q6），Hunk 对未提供的 capability 报"不支持"，不会崩溃。避免为了 log 复刻整套提交图遍历；记为未来工作。
-- **combined diff（`diff --cc`）内容行转码**：v1 透传（Q10），记为 M4+ 增强。
+- combined diff（`diff --cc`）内容行转码：**M4 已实现**（Q10 已落地）。
 - 纯 patch 输入（`hunk patch foo.diff` 读磁盘文件）：不经 VCS 适配器，不在本插件范围，写入 README 说明。
 
 ## 7. 配置设计
@@ -307,7 +307,7 @@ overrides = { "legacy/**/*.txt" = "gbk", "*.csv" = "gbk" }
 | `hunk patch foo.diff` 审查**外部生成的非 UTF-8 patch 文件** | 先 `iconv -f gbk -t utf-8 foo.diff` 转码，或改走 `hunk diff` 审 git 仓库 | **否**——patch 文件读取不经 VCS 适配器，`registerCliCommand` 也不能覆盖内置 `patch` 命令，无扩展钩子 |
 | `hunk log` 交互式历史审查 | 本计划 v1 不实现 `history` capability（Q6），报"不支持"；改用 `hunk show <rev>` | **可补**——未来增加 `history` capability 即闭环（复用同一转码管线），记为未来工作 |
 | jj / Sapling 仓库中的非 UTF-8 文件 | 在 git 仓库中审查，或等待 jj / sl 变体扩展 | **否（当前）**——适配器只 detect `.git`；后续可另注册 jj / sl 包装适配器 |
-| merge commit 的 combined diff（`diff --cc`）内容转码 | 无（v1 透传，内容行可能仍乱码） | **可补**——M4+ 增强：识别 `@@@` 头与双前缀内容行后转码 |
+| merge commit 的 combined diff（`diff --cc`）内容转码 | **M4 已补**：双符号列内容行转码 |
 | UTF-16 文件 | git 把含 NUL 的字节当二进制，显示 binary 占位（无乱码也无文本 diff）；需在仓库配 `.gitattributes`（如 `working-tree-encoding=UTF-16`）让 git 当作文本输出 | 部分——UTF-16 被 git 判为二进制时扩展无字节可读；需 git 侧配合 |
 | `--no-extensions` 或扩展加载失败 | 回到内置 git 适配器，乱码复现 | 否——这是 Hunk 的故障隔离语义，本扩展不改变 |
 
@@ -365,6 +365,7 @@ UTF-8 段走严格校验直通，快速路径保证无额外开销、无行为�
 - **M1 已落地**：`src/config.ts`（canonical 白名单表 + overrides 斜杠启发式 glob 编译/最长匹配 + 校验与 notify）、`src/transcode.ts`（六层探测链 + 转码 + TextDecoder 实例池 + ANSI 剥离 + ASCII 快速路径）、`src/patch.ts`（按 `diff --git`/`diff --cc` 分段 + 逐内容行转码 + 二进制/combined 透传 + `\ No newline` 保留）。`bun run test`（= `bun test test/`，避开模板 examples）全绿。
 - **M2 已落地**：`src/git.ts`（字节模式 spawn + 参数组装 + 错误翻译，逐位复刻内置 `commands.ts`）、`src/endpoints.ts`（`resolveGitDiffEndpoints` 复刻：staged HEAD^{commit}/none、单正 rev→worktree、`A..B`、`A...B` merge-base、多 rev → null）、`src/adapter.ts`（numstat 大文件跳过、untracked 自产 diff、readFileSource 按 (path, side) 独立探测 + 编码配置指纹进 cacheKey）、`index.ts` 入口（注册适配器 + 解析 `[extension.hunk-custom-encoding]` 配置）。**untracked gating 与 cacheKey 形状已按内置源码核实修正**（见 §6.1/§6.2）；`test/git.test.ts` 纯函数 + `test/adapter.integration.test.ts`（真 fixture 仓库，GBK/SJIS/Big5/二进制/untracked/staged/range/rangeEndpoints/Q9 双侧探测/UTF-8 基线逐字节一致）全绿，共 104 用例。
 - **M3 已落地**：`buildGitShowArgs`/`buildGitStashShowArgs`/`resolveGitCommitRef`/`resolveGitColorMovedOptions`/`GIT_MOVED_LINE_COLOR_CONFIG` 逐位复刻内置（含 `--end-of-options` 防注入与 colorMoved 三态解析：config false 一票否决、boolean true→`zebra`、显式 mode 原样透传、`diff.colorMovedWS` 原样携带）；`revision-show`（端点 `{old: <id>^, new: <id>}`，root commit 旧侧降级 null）、`stash-show`（`stash@{0}` 默认、无 pathspec）、三个 operation 的 `watchSignature`（working-tree = [转码 patch, `untracked:<abs>:<size>:<mtimeMs>:<ino>`|`missing`…].join("\n---\n")，show/stash = 转码全文；全部 `preventOptionalLocks`）接入。**错误翻译升级为按 kind 分派**（show 引用错误 / stash 缺失条目 / vcs range 内联 + `--` 分隔提示 / 缺仓库建议按 kind 分行），`endpoints.ts` 未知引用降级规则与内置对齐。**重大修复（Q4 实测发现）**：`--color=always` 下 git 连**结构行**也着色（`ESC[1mdiff --git…ESC[m`、`ESC[36m@@…ESC[m`），原字节前缀匹配把整段当 prelude 透传 → GBK 乱码；`patch.ts` 全部结构匹配（段头/@@/`+++`/`---`/段类型判定）改为先跳过前导 ANSI 转义，`parsePathLine` 先剥离 ANSI 再取路径（行尾 reset 转义曾黏在路径上破坏 overrides 匹配）。真机验证：`hunk show`/`hunk diff` 在 `diff.colorMoved=zebra` + GBK 下正常转码。**M3 有意裁剪**：`watchPlan` 未实现（宿主走 poll-only 回退，契约允许）；`review` 提交描述符延后 M4；endpoints merge-base 失败保持"降级 null"而非内置的硬失败（错误面更友好，见 §6.1 注）。共 154 用例。
+- **M4 已落地**：`README.md` 全面重写（存在理由与 `.gitattributes working-tree-encoding` 的取舍、命令覆盖表、安装与信任模型〔user 目录隐式信任 / 仓库目录 trust prompt / `--no-extensions`〕、配置文档〔默认 fallback 为 `gbk`、检测链、overrides 斜杠启发式、repo 逐键覆盖 user 配置的不可信性说明〕、已知局限含 CJK 歧义与合并提交非 TTY 渲染限制）；`src/review-info.ts` 复刻内置 `commitReviewInfo`（sanitize/truncate/GitHub noreply 作者标签启发式），`git.ts` 新增 `buildGitReviewCommitsArgs`/`parseGitReviewCommits`（内置 history 8-NUL 字段管线的窄切片），`revision-show` 返回 commit review 描述符（stash 按内置行为不带）；`patch.ts` 落地 combined 转码（Q10 增强，`@@@` 头 + 双符号列分类器，ANSI 感知；fixture 已按真实 git 输出修正为两列符号形状）。`private: true` 保持（Q14）。共 163 用例。
 - **测试基建**：`test/runtime.ts` + bunfig `[test] preload` 用 Bun plugin 把 `hunkdiff/extension` 映射到 vendored 官方运行时（host 之外的测试环境替身，`HunkExtensionUserError` 行为一致）。
 - **实测修正（Bun 1.3.13）**：`new TextDecoder("gbk").encoding` 返回 `"gbk"` 而非 WHATWG 规范名 `"gb18030"`——canonical 归一改用自维护映射表（见 `src/config.ts`），`"gbk"/"gb2312"/"gb18030"` 统一为 `"gbk"`，`"latin1"/"iso-8859-1"` → `"windows-1252"`，`"cp866"` → `"ibm866"`；Big5「體」实测为 `C5 E9`。
 
@@ -409,7 +410,7 @@ UTF-8 段走严格校验直通，快速路径保证无额外开销、无行为�
 | M1 | `transcode.ts` + `patch.ts` + 单测 | 纯函数单测全绿 |
 | M2 | `git.ts` + `working-tree-diff`（含 range/rangeEndpoints、numstat 大文件跳过、untracked 自产 diff）+ `readFileSource`（按 side 独立探测 + 编码进 cacheKey） | fixture 仓库 adapter 层集成测试全绿：GBK 无乱码、UTF-8 无回归 |
 | M3 | `revision-show` / `stash-show` / `watchSignature`（转码 patch + stat 签名）/ `colorMoved`（透传 ANSI） | 对应命令与手工清单验证通过 |
-| M4 | README（含 `.gitattributes working-tree-encoding` 补充方案、信任说明、配置文档、已知局限）、combined diff 转码增强（可选） | 文档齐备；扩展保持 `private`（Q14） |
+| M4 | ✅ README（`.gitattributes working-tree-encoding` 取舍、信任模型、配置文档、已知局限）+ combined diff 转码 + show 的 commit review 描述符 | 文档齐备；`private: true`（Q14）✅ |
 
 ## 11. 结论
 

@@ -16,9 +16,9 @@
  * `revision-show` / `stash-show` / `watchSignature` / `colorMoved` follow the
  * built-in shapes (M3, plan §6.3-6.5) with the same byte-mode difference:
  * every patch runs git raw and passes through the M1 transcode pipeline.
- * `history` stays unimplemented (Q6 — `hunk log` reports "not supported"),
- * `watchPlan` stays out (poll-only fallback), and the `review` commit
- * descriptor is deferred to M4 (title alone still renders fine).
+ * The commit review descriptor rides along (M4). `history` stays
+ * unimplemented (Q6 — `hunk log` reports "not supported") and `watchPlan`
+ * stays out (poll-only fallback is the watch contract).
  */
 
 import fs from "node:fs";
@@ -51,11 +51,14 @@ import {
   parseUntrackedFilePaths,
   resolveGitColorMovedOptions,
   resolveGitCommitRef,
+  buildGitReviewCommitsArgs,
+  parseGitReviewCommits,
   runGitBytes,
   runGitText,
 } from "./git";
 import type { GitBackedInput } from "./git";
 import { resolveGitDiffEndpoints, type GitDiffEndpoint, type GitDiffEndpoints } from "./endpoints";
+import { commitReviewInfo } from "./review-info";
 import { transcodePatch } from "./patch";
 import { detectEncoding, isLikelyBinary, transcode } from "./transcode";
 import type { ExtensionSettings } from "./config";
@@ -488,6 +491,18 @@ async function loadRevisionShow(
     new: { kind: "git-ref", ref: revisionId },
   });
 
+  // Commit context for the review header (built-in loads it for show only).
+  const commits = parseGitReviewCommits(
+    await runGitText({
+      args: buildGitReviewCommitsArgs(revisionId, 1),
+      cwd: repoRoot,
+      signal,
+      label,
+      errorContext: input,
+    }),
+  );
+  const commit = commits[0];
+
   const colorMoved = await resolveGitColorMovedOptions(input, { cwd, signal });
   const patchResult = await runGitBytes({
     // Patch args use the resolved commit id, so titles quote what the user
@@ -504,6 +519,7 @@ async function loadRevisionShow(
     sourceLabel: repoRoot,
     title: input.ref ? `${repoName} show ${input.ref}` : `${repoName} show HEAD`,
     patchText: transcodePatch(patchResult.stdout, settings),
+    ...(commit ? { review: commitReviewInfo("Git", commit) } : {}),
     ...capability,
   };
 }

@@ -138,7 +138,7 @@ const COMBINED_SECTION = patch(
   "--- a/merge.txt\n",
   "+++ b/merge.txt\n",
   "@@@ -1,1 -1,1 +1,1 @@@\n",
-  "-",
+  "- ",
   GBK_OLD,
   "\n",
   "++",
@@ -260,12 +260,47 @@ describe("transcodePatch — segments", () => {
     expect(text).not.toContain("旧中文");
   });
 
-  test("combined (diff --cc) segments are passed through (Q10)", () => {
+  test("combined (diff --cc) segments transcode both sign columns (Q10, M4)", () => {
     const text = transcodePatch(COMBINED_SECTION, defaults);
     expect(text).toContain("diff --cc a/merge.txt");
     expect(text).toContain("@@@ -1,1 -1,1 +1,1 @@@");
-    expect(text).toBe(builtinDecode(COMBINED_SECTION));
-    expect(text).not.toContain("旧中文"); // not transcoded
+    // M4: two-sign-column content lines now decode instead of passing
+    // through as mojibake (merge-commit reviews in GBK repos). Real git
+    // always emits two columns: `- 旧中文` (removed vs parent 1), `++新中文`
+    // (changed vs both).
+    expect(text).toContain("- 旧中文");
+    expect(text).toContain("++新中文");
+    expect(text).not.toContain("\uFFFD");
+  });
+
+  test("painted combined content lines transcode too", () => {
+    const bytes = patch(
+      paint("1", "diff --cc a/merge.txt"),
+      paint("1", "index 1111111,2222222..3333333"),
+      paint("1", "--- a/merge.txt"),
+      paint("1", "+++ b/merge.txt"),
+      paint("36", "@@@ -1,1 -1,1 +1,1 @@@"),
+      patch(`${E}31m- `, GBK_OLD, `${E}m\n`),
+      patch(`${E}32m++`, GBK_NEW, `${E}m\n`),
+    );
+    const text = transcodePatch(bytes, defaults);
+    expect(text).toContain("@@@");
+    expect(text).toContain("- 旧中文");
+    expect(text).toContain("++新中文");
+    expect(text).not.toContain("\uFFFD");
+  });
+
+  test("combined segments keep ASCII-only content byte-identical", () => {
+    const bytes = patch(
+      "diff --cc a/merge.txt\n",
+      "index 1111111,2222222..3333333\n",
+      "--- a/merge.txt\n",
+      "+++ b/merge.txt\n",
+      "@@@ -1,1 -1,1 +1,1 @@@\n",
+      "- ascii old\n",
+      "++ascii new\n",
+    );
+    expect(transcodePatch(bytes, defaults)).toBe(builtinDecode(bytes));
   });
 
   test("rename segments probe via +++ path and decode content", () => {

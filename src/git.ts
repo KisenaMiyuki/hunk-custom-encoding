@@ -298,6 +298,89 @@ export async function resolveGitCommitRef(
   return text.split("\n")[0]!.trim();
 }
 
+/* -------------------------------------------------------------------------- */
+/* Review commit records (M4 — built-in history.ts narrow slice)               */
+/* -------------------------------------------------------------------------- */
+
+/** One commit summary in the shape the review descriptor needs. */
+export interface VcsReviewCommit {
+  revisionId: string;
+  displayId: string;
+  parentRevisionIds: string[];
+  subject: string;
+  body?: string;
+  authorName: string;
+  authorEmail?: string;
+  authoredAt: string;
+}
+
+/** argv for the bounded `git log -z` record query (built-in history fields). */
+export function buildGitReviewCommitsArgs(revision: string, maxCount = 1): string[] {
+  return [
+    "log",
+    "--topo-order",
+    "--parents",
+    "--no-show-signature",
+    "--no-color",
+    "--abbrev=8",
+    "-z",
+    "--format=%H%x00%h%x00%P%x00%an%x00%ae%x00%aI%x00%s%x00%b",
+    ...(maxCount !== undefined ? [`--max-count=${maxCount}`] : []),
+    revision,
+  ];
+}
+
+const FULL_OBJECT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+const ABBREVIATED_OBJECT_ID_PATTERN = /^[0-9a-f]{4,64}$/;
+const FIELDS_PER_COMMIT = 8;
+
+/**
+ * Parse fixed NUL-delimited `git log -z` records into commit summaries
+ * (built-in `parseGitHistory` narrow slice: no decorations, no graph mode).
+ */
+export function parseGitReviewCommits(text: string): VcsReviewCommit[] {
+  if (!text) return [];
+  const fields = text.split("\0");
+  if (fields.length % FIELDS_PER_COMMIT === 1 && fields.at(-1) === "") fields.pop();
+  if (fields.length % FIELDS_PER_COMMIT !== 0) {
+    throw new Error("Git returned a truncated history record.");
+  }
+
+  const commits: VcsReviewCommit[] = [];
+  for (let offset = 0; offset < fields.length; offset += FIELDS_PER_COMMIT) {
+    const revisionId = fields[offset]!;
+    const displayId = fields[offset + 1]!;
+    const parents = fields[offset + 2]!;
+    const authorName = fields[offset + 3]!;
+    const authorEmail = fields[offset + 4]!;
+    const authoredAt = fields[offset + 5]!;
+    const subject = fields[offset + 6]!;
+    const body = fields[offset + 7]!;
+    if (!revisionId || !displayId || !authoredAt) {
+      throw new Error("Git returned an incomplete history record.");
+    }
+    const parentRevisionIds = parents ? parents.split(" ").filter(Boolean) : [];
+    if (
+      !FULL_OBJECT_ID_PATTERN.test(revisionId) ||
+      !ABBREVIATED_OBJECT_ID_PATTERN.test(displayId) ||
+      parentRevisionIds.some((parent) => !FULL_OBJECT_ID_PATTERN.test(parent))
+    ) {
+      throw new Error("Git returned an invalid history object id.");
+    }
+    commits.push({
+      revisionId,
+      displayId,
+      parentRevisionIds,
+      subject: subject || "(no commit message)",
+      ...(body ? { body: body! } : {}),
+      authorName: authorName || "Unknown author",
+      ...(authorEmail ? { authorEmail: authorEmail! } : {}),
+      authoredAt,
+    });
+  }
+  return commits;
+}
+
 /** The cheap tracked-file stats query used to skip huge diffs before patch output. */
 export function buildGitDiffNumstatArgs(input: ExtensionVcsDiffInput): string[] {
   const args = ["diff", "--no-ext-diff", "--find-renames", "--no-color", "--numstat", "-z"];

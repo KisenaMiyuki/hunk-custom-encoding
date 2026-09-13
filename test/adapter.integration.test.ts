@@ -463,13 +463,21 @@ describe("revision-show (M3)", () => {
   // No describe-level cleanup: showRepo is shared by the stash/watch/colorMoved
   // describes below; the module-level afterAll owns its teardown.
 
-  test("default ref (HEAD): title, transcoded GBK patch, no U+FFFD", async () => {
+  test("default ref (HEAD): title, transcoded GBK patch, commit descriptor", async () => {
     const result = await loadShow(showInput());
     expect(result.title).toBe(`${showRepoName()} show HEAD`);
     expect(result.repoRoot).toBe(showRepo.root.replace(/\\/g, "/"));
     expect(result.patchText).toContain("-旧内容");
     expect(result.patchText).toContain("+新内容");
     expect(result.patchText).not.toContain("\uFFFD");
+    // M4: the commit review descriptor rides along (built-in show behavior).
+    expect(result.review).toMatchObject({
+      kind: "commit",
+      provider: "Git",
+      title: "second",
+      displayRevision: showRepo.headSha.slice(0, 8),
+      revision: showRepo.headSha,
+    });
   }, TIMEOUT);
 
   test("explicit ref is quoted in the title but resolved for the patch", async () => {
@@ -555,6 +563,8 @@ describe("stash-show (M3)", () => {
     expect(result.patchText).toContain("-新内容");
     expect(result.patchText).toContain("+旧中文");
     expect(result.patchText).not.toContain("\uFFFD");
+    // Built-in stash reviews carry no commit descriptor.
+    expect(result.review).toBeUndefined();
   }, TIMEOUT);
 
   test("explicit ref is quoted in the title", async () => {

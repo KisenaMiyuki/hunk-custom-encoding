@@ -16,9 +16,10 @@
  *     hunk headers, `+++`/`---` file headers) skips leading ANSI escapes
  *     before matching.
  *
- * Binary segments and combined (`diff --cc`) segments pass through with
- * plain UTF-8 decoding — the same bytes the built-in adapter would hand to
- * Hunk (Q10).
+ * Binary segments pass through with plain UTF-8 decoding — the same bytes
+ * the built-in adapter would hand to Hunk. Combined (`diff --cc`) segments
+ * transcode their two-sign-column content lines (M4 enhancement of Q10;
+ * the v1 passthrough lost merge-commit content to mojibake).
  */
 
 import { type ExtensionSettings } from "./config";
@@ -43,6 +44,7 @@ const DIFF_COMBINED_PREFIX = "diff --combined ";
 const PLUS_FILE_PREFIX = "+++ ";
 const MINUS_FILE_PREFIX = "--- ";
 const HUNK_HEADER_PREFIX = "@@ ";
+const HUNK_HEADER_COMBINED_PREFIX = "@@@ ";
 const DEV_NULL = "/dev/null";
 
 type SectionKind = "normal" | "combined";
@@ -118,6 +120,24 @@ function classifyHunkLine(line: Uint8Array): ContentClass {
   if (byte < 0) return "other";
   if (byte === BACKSLASH) return "noeol";
   if (byte === PLUS || byte === MINUS || byte === SPACE) return "content";
+  return "other";
+}
+
+/**
+ * Classify a combined (`diff --cc`) hunk body line: two sign columns
+ * (each `+` / `-` / space) prefix the content, `\ No newline` keeps its
+ * single-backslash marker. Combined content lines are ANSI-painted exactly
+ * like normal ones, so classification runs on the visible bytes (Q4/Q10).
+ */
+function classifyCombinedHunkLine(line: Uint8Array): ContentClass {
+  const start = ansiSkipIndex(line);
+  if (start < 0) return "other";
+  const first = line[start]!;
+  if (first === BACKSLASH) return "noeol";
+  const second = start + 1 < line.length ? line[start + 1] : undefined;
+  const isSign = (byte: number | undefined) =>
+    byte !== undefined && (byte === PLUS || byte === MINUS || byte === SPACE);
+  if (isSign(first) && isSign(second)) return "content";
   return "other";
 }
 
@@ -247,6 +267,63 @@ function joinLines(lines: readonly (string | Uint8Array)[]): string {
 }
 
 /**
+ * Rebuild one combined (`diff --cc`) segment with per-line transcoding
+ * (M4 enhancement of Q10): same machinery as the normal section, but hunk
+ * bodies use the two-sign-column classifier and `@@@` hunk headers.
+ */
+function transcodeCombinedSection(
+  lines: readonly Uint8Array[],
+  settings: ExtensionSettings,
+): string {
+  let allAscii = true;
+  for (const line of lines) {
+    if (!isPureAscii(line)) {
+      allAscii = false;
+      break;
+    }
+  }
+  if (allAscii) return joinLines(lines);
+
+  const targetPath = extractTargetPath(lines) ?? "";
+
+  // Combined hunks start at the first `@@@` header.
+  let firstHunk = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (visibleStartsWith(lines[i]!, HUNK_HEADER_COMBINED_PREFIX)) {
+      firstHunk = i;
+      break;
+    }
+  }
+
+  const out: string[] = [];
+  const contentIndexes: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (firstHunk < 0 || i < firstHunk) {
+      out.push(lineToText(line)); // header line — ASCII under quotePath
+      continue;
+    }
+    const cls = classifyCombinedHunkLine(line);
+    if (cls === "content") {
+      contentIndexes.push(i);
+      out.push(""); // placeholder, replaced below
+    } else {
+      out.push(lineToText(line)); // noeol marker / defensive passthrough
+    }
+  }
+
+  let encoding = UTF8_ENCODING;
+  if (contentIndexes.length > 0) {
+    const probe = collectProbeBytes(lines, contentIndexes);
+    encoding = detectEncoding(probe, targetPath, settings);
+    for (const index of contentIndexes) {
+      out[index] = transcode(lines[index]!, encoding);
+    }
+  }
+  return joinLines(out);
+}
+
+/**
  * Transcode a raw patch byte stream to UTF-8 text (plan §4).
  *
  * `settings` is the parsed `[extension.hunk-custom-encoding]` config.
@@ -277,7 +354,7 @@ export function transcodePatch(
     parts.push(
       kind === "normal"
         ? transcodeNormalSection(segment, settings)
-        : joinLines(segment), // combined: passthrough (Q10)
+        : transcodeCombinedSection(segment, settings),
     );
     cursor = end;
   }
