@@ -1,14 +1,12 @@
 # hunk-custom-encoding
 
-给 Hunk 装上这个扩展后,用 GBK、Big5、Shift-JIS 等老编码的仓库在 `hunk diff`、`hunk show` 里就能看到正常的中文、日文,不再满屏乱码。它只是帮 Hunk"看懂"文件,**不会改动你的仓库**。
+ **[English](./README.md)** · 中文
 
-**导航**: [简介](#简介) · [安装](#安装) · [使用](#使用) · [为什么不用 .gitattributes?](#为什么不用-gitattributes-working-tree-encoding) · [配置](#配置) · [已知局限](#已知局限) · [开发](#开发) · [环境备注(bun)](#环境备注bun-全局更新的部分替换问题) · **[English](./README.md)**
+给 Hunk 装上这个扩展后,用 GBK、Big5、Shift-JIS 等老编码的仓库在 `hunk diff`、`hunk show` 里就能看到正常的中文、日文,不再满屏乱码。它只是帮 Hunk"看懂"文件,**不会改动你的仓库**。
 
 ## 简介
 
-一句话:老编码的文件先猜出它真正用的编码,转成 UTF-8 再给 Hunk 看,你的文件一个字节都不会动。
-
-原理其实很简单——Hunk 自带的 Git 功能默认把所有内容当 UTF-8 来读,老编码的内容自然变成乱码。这个扩展会在中间接手:先判断每个文件用的是哪种编码,转好再交给 Hunk。本来就是 UTF-8 的仓库,显示效果和自带功能一模一样,等于没装。
+Hunk 自带的 Git 功能默认把所有内容当 UTF-8 来读,老编码的内容自然变成乱码。这个扩展会在中间接手:先判断每个文件用的是哪种编码,转好再交给 Hunk。本来就是 UTF-8 的仓库,显示效果和自带功能一模一样,没有影响。
 
 ## 安装
 
@@ -16,34 +14,34 @@
 hunk extension install KisenaMiyuki/hunk-custom-encoding
 ```
 
-- 如果你的 Hunk 版本太旧、带不动这个扩展,会收到一条明确的版本提示,照着升级就行。
-- 想临时关掉它:`hunk --no-extensions`(Hunk 自带的功能不受影响)。
+- 如果 Hunk 版本太旧,会收到一条明确的版本提示,照着升级就行。
+- 临时关掉扩展:`hunk --no-extensions`(Hunk 自带的功能不受影响)。
 
 ## 使用
 
-| 你想看什么 | 能不能用 | 说明 |
+| 指令 | 支持 | 说明 |
 | --- | --- | --- |
-| `hunk diff`(没提交的修改) | ✅ | 中文正常显示 |
-| `hunk diff --staged`(已暂存的修改) | ✅ | 同上 |
-| `hunk diff 某次提交` / 比较两个提交 | ✅ | 新建的、还没登记的文件也会一起显示 |
-| `hunk show 某次提交` | ✅ | 看提交内容,顺带显示作者、时间等提交信息 |
-| `hunk stash show`(暂存起来的修改) | ✅ | 不写编号就看最近一次 |
-| `hunk diff --watch`(盯着文件变化) | ✅ | 文件一变自动刷新;改编码配置也会自动刷新 |
-| `--color-moved`(高亮移动过的行) | ✅ | 颜色照常,中文照常 |
-| `hunk log`(看提交历史) | ❌ | 会提示"不支持" |
-| `hunk patch 补丁文件` | ⚠️ | 直接读补丁文件,不经过本扩展,不会转码 |
+| `hunk diff` | ✅ | 中文正常显示 |
+| `hunk diff --staged` | ✅ | 同上 |
+| `hunk diff <commit>` | ✅ | 新建的、还没登记的文件也会一起显示 |
+| `hunk show <commit>` | ✅ | 看提交内容,顺带显示作者、时间等提交信息 |
+| `hunk stash show` | ✅ | 不写编号就看最近一次 |
+| `hunk diff --watch` | ✅ | 文件一变自动刷新;改编码配置也会自动刷新 |
+| `--color-moved` | ✅ | 颜色照常,中文照常 |
+| `hunk log` | ❌ | 会提示"不支持" |
+| `hunk patch <patch file>` | ⚠️ | 直接读补丁文件,不经过本扩展,不会转码 |
 
 合并提交(merge)的 diff 也能正常显示中文。
 
 ## 为什么不用 .gitattributes working-tree-encoding?
 
-git 其实自带一个办法(在 `.gitattributes` 里设置 `working-tree-encoding`),但它有个大问题:checkout 时会**真的改写你磁盘上的文件**。你的文件内容变了、git 记录也跟着变,其他不认识这个设置的工具看到的文件也会不一样。
+git 其实自带一个办法(在 `.gitattributes` 里设置 `working-tree-encoding`),但它有个大问题:checkout 时会**真的改写磁盘上的文件**。文件内容变了、git 记录也跟着变,其他不认识这个设置的工具看到的文件也会不一样。
 
 这个扩展走的是另一条路:**只改"看"的方式,不改文件**。
 
-- 不动你的文件,仓库保持原样;
+- 不动磁盘文件,仓库保持原样;
 - 不用每个仓库单独设置,装一次到处能用;
-- 一个仓库里混着多种编码也能搞定,可以按文件指定编码——仓库级的设置做不到这一点。
+- 一个仓库里混着多种编码也能搞定,可以按文件指定编码。
 
 如果你已经在用 git 自带的方案而且没问题,继续用就好,两者不冲突。
 
@@ -81,12 +79,12 @@ encodings = ["gbk", "big5", "shift_jis"]   # 挨个试这些编码,先猜中先�
 ```bash
 bun install       # 装依赖(运行时零依赖,类型文件已经内置在仓库里)
 bun run test      # 跑测试:163 个用例,包括真实 git 仓库的集成测试
-bunx tsc --noEmit # 类型检查,零报错
+bunx tsc --noEmit # 类型检查
 ```
 
 测试用的 git 仓库里提交的都是真实的 GBK、日文、繁体字节,所以每个解码结果都是可复现、可对照的。
 
-## 环境备注(bun):全局更新的坑
+## 环境备注(bun):全局更新的问题
 
 用 `bun add -g hunkdiff` 升级 Hunk 时,bun 有个毛病:可能只更新了 package.json 这类小文件,却**没换掉那个一百多 MB 的 hunk.exe**(文件是硬链接的,它还连着旧版本)。结果就是:包明明显示 0.22.0,`hunk --version` 却报 0.21.1,装扩展时报"API v16"。同时,`@opentui/core` 这类依赖也可能停在旧版,报 `Symbol "createEmbeddedTerminal" not found`。
 
