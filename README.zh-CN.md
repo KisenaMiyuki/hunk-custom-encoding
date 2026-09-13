@@ -1,12 +1,14 @@
 # hunk-custom-encoding
 
- **[English](./README.md)** · 中文
+给 Hunk 装上这个扩展后,用 GBK、Big5、Shift-JIS 等老编码的仓库在 `hunk diff`、`hunk show` 里就能看到正常的中文、日文,不再满屏乱码。它只是帮 Hunk"看懂"文件,**不会改动你的仓库**。
 
-[Hunk](https://hunk.dev) Git 审查的按文件编码转码扩展:GBK、Big5、Shift-JIS 等非 UTF-8 仓库正常显示中文/日文,而不是乱码,且**完全不改动被审查的仓库**。
+**导航**: [简介](#简介) · [安装](#安装) · [使用](#使用) · [为什么不用 .gitattributes?](#为什么不用-gitattributes-working-tree-encoding) · [配置](#配置) · [已知局限](#已知局限) · [开发](#开发) · [环境备注(bun)](#环境备注bun-全局更新的部分替换问题) · **[English](./README.md)**
 
 ## 简介
 
-扩展注册了一个 VCS 适配器(`hunk-custom-encoding`),逐位包装 Git:所有产出 patch 的 `git` 命令以**字节模式**运行,patch 内容按段转码为 UTF-8 后再交给 Hunk。纯 UTF-8 仓库与内置适配器逐字节一致;检测与解码只发生在审查过程中,工作区与索引永不改写。
+一句话:老编码的文件先猜出它真正用的编码,转成 UTF-8 再给 Hunk 看,你的文件一个字节都不会动。
+
+原理其实很简单——Hunk 自带的 Git 功能默认把所有内容当 UTF-8 来读,老编码的内容自然变成乱码。这个扩展会在中间接手:先判断每个文件用的是哪种编码,转好再交给 Hunk。本来就是 UTF-8 的仓库,显示效果和自带功能一模一样,等于没装。
 
 ## 安装
 
@@ -14,76 +16,84 @@
 hunk extension install KisenaMiyuki/hunk-custom-encoding
 ```
 
-清单钉住 `"hunk": { "apiVersion": 25 }` —— 更旧的 Hunk 二进制会带明确提示拒绝加载。`hunk --no-extensions` 可临时关闭(本批次的 Hunk 内置后端不受影响)。
+- 如果你的 Hunk 版本太旧、带不动这个扩展,会收到一条明确的版本提示,照着升级就行。
+- 想临时关掉它:`hunk --no-extensions`(Hunk 自带的功能不受影响)。
 
 ## 使用
 
-| 命令 | 状态 | 说明 |
+| 你想看什么 | 能不能用 | 说明 |
 | --- | --- | --- |
-| `hunk diff` / `hunk diff --staged` | ✅ | 已跟踪变更,字节模式转码 |
-| `hunk diff <ref>` / `<from> <to>` / 区间 | ✅ | 新侧为工作区时包含 untracked 文件 |
-| `hunk show [ref]` | ✅ | 源读取钉在 `<id>^` ↔ `<id>`;root commit 旧侧降级 |
-| `hunk stash show [ref]` | ✅ | 默认 `stash@{0}` |
-| `hunk diff --watch` | ✅ | 签名由转码后文本构成——编码配置一改即触发重审 |
-| `--color-moved` / `diff.colorMoved` | ✅ | ANSI 透传;git 的固定 moved 行配色已复刻 |
-| `hunk log` | ❌ | 报"不支持" |
-| `hunk patch <file>` | ⚠️ | 直接读文件的输入不经过 VCS 适配器——不转码 |
+| `hunk diff`(没提交的修改) | ✅ | 中文正常显示 |
+| `hunk diff --staged`(已暂存的修改) | ✅ | 同上 |
+| `hunk diff 某次提交` / 比较两个提交 | ✅ | 新建的、还没登记的文件也会一起显示 |
+| `hunk show 某次提交` | ✅ | 看提交内容,顺带显示作者、时间等提交信息 |
+| `hunk stash show`(暂存起来的修改) | ✅ | 不写编号就看最近一次 |
+| `hunk diff --watch`(盯着文件变化) | ✅ | 文件一变自动刷新;改编码配置也会自动刷新 |
+| `--color-moved`(高亮移动过的行) | ✅ | 颜色照常,中文照常 |
+| `hunk log`(看提交历史) | ❌ | 会提示"不支持" |
+| `hunk patch 补丁文件` | ⚠️ | 直接读补丁文件,不经过本扩展,不会转码 |
 
-merge 提交审查(`diff --cc`)的双符号列内容行同样转码。
+合并提交(merge)的 diff 也能正常显示中文。
 
-## 为什么不用 `.gitattributes working-tree-encoding`?
+## 为什么不用 .gitattributes working-tree-encoding?
 
-git 的原生方案在 **checkout 时改写文件**:工作区被重写、索引变动,不了解该属性的工具会看到不同字节。本扩展走只读路线:
+git 其实自带一个办法(在 `.gitattributes` 里设置 `working-tree-encoding`),但它有个大问题:checkout 时会**真的改写你磁盘上的文件**。你的文件内容变了、git 记录也跟着变,其他不认识这个设置的工具看到的文件也会不一样。
 
-- 不改工作区与索引——检测与解码按审查进行;
-- 无需逐仓库设置;同一份配置覆盖你审查的所有旧编码仓库;
-- 混合编码仓库可用逐文件 `overrides`,这是仓库级属性表达不了的。
+这个扩展走的是另一条路:**只改"看"的方式,不改文件**。
 
-如果你已经在用 `working-tree-encoding` 且工作良好,继续用即可——本扩展是替代方案,不是前置条件。
+- 不动你的文件,仓库保持原样;
+- 不用每个仓库单独设置,装一次到处能用;
+- 一个仓库里混着多种编码也能搞定,可以按文件指定编码——仓库级的设置做不到这一点。
+
+如果你已经在用 git 自带的方案而且没问题,继续用就好,两者不冲突。
 
 ## 配置
 
 ```toml
-# ~/.config/hunk/config.toml 或 .hunk/config.toml
+# 配置文件:~/.config/hunk/config.toml(全局)或 .hunk/config.toml(仅当前仓库)
 [extension.hunk-custom-encoding]
-encodings = ["gbk", "big5", "shift_jis"]   # 候选列表,顺序即优先级
-# fallback = "gbk"                          # 默认值;候选全部失败后使用(latin1 是最终兜底)
+encodings = ["gbk", "big5", "shift_jis"]   # 挨个试这些编码,先猜中先用
+# fallback = "gbk"    # 上面全猜不中时用的兜底编码,默认就是 gbk
 
 [extension.hunk-custom-encoding.overrides]
-"sjis.txt" = "shift_jis"          # 不含 "/" → 按文件名匹配(任意深度)
-"src/legacy/**" = "gbk"           # 含 "/" → 按仓库相对路径整体匹配
+"sjis.txt" = "shift_jis"      # 按文件名指定:任何目录下的 sjis.txt 都用 shift_jis
+"src/legacy/**" = "gbk"       # 写了斜杠就按完整路径指定
 ```
 
-每个内容段的检测顺序:`overrides` → BOM → 严格 UTF-8 直通 → 候选列表按序 → `fallback` → latin1(永不失败)。编码名按白名单校验并归一(`gbk`/`gb2312`/`gb18030` → `gbk`、`latin1` → `windows-1252`);未知名会以状态栏提示拒绝。
+判断一个文件用什么编码的顺序:先看 `overrides` 有没有指定 → 看文件开头有没有 BOM 标记 → 看它是不是本来就符合 UTF-8 → 按 `encodings` 列表挨个试 → 用 `fallback` → 最后按 latin1 兜底(这个一定出得来结果)。
 
-仓库配置**逐键覆盖**用户配置——被审查的仓库可以调整本扩展的设置。这是 Hunk 的正常工作流;本扩展只用配置承载编码名,绝不用于任何 exec 相邻的决策,非法值也不会进入解码器。
+编码名写错了不会崩,状态栏会提示一句,然后继续用默认值。
 
-**CJK 歧义**:Shift-JIS 与 GBK 共享大量字节序列。默认候选顺序下,Shift-JIS 文件通常会被解成 GBK——请用 `overrides` 钉住这类文件,或调整 `encodings` 顺序。
+仓库里的 `.hunk/config.toml` 会覆盖全局配置里的同名设置(一项一项地覆盖)。这是 Hunk 的正常机制,不用担心;本扩展只会从配置里读编码名字,不会拿配置去执行任何程序,写错了也只是提示。
+
+**GBK 和 Shift-JIS 会"撞车"**:这两种编码有很多字节长得一模一样。默认顺序下,日文文件经常被当成 GBK 解出一堆怪字。解决办法:用 `overrides` 给这类文件单独指定编码,或者调整 `encodings` 的顺序。
 
 ## 已知局限
 
-- 检测是逐段启发式,不是保证——混合编码仓库请用 `overrides`。
-- 二进制文件、子模块、UTF-16 内容原样透传(git 本就把它们判为二进制)。
-- 超过 2 万变更行或 1 MB 的文件以统计信息跳过,不渲染 diff(与内置同门槛)。
-- combined(`diff --cc`)段内容会转码,但 merge 提交的 `hunk show` 在非 TTY 静态模式下不渲染——请在交互 TUI 中审查。
-- `hunk patch <file>` 完全绕过 VCS 适配器,patch 文件不会被转码。
+- 自动猜编码不是百分百准,混着多种编码的仓库建议用 `overrides` 手动指定。
+- 二进制文件、子模块、UTF-16 文件原样显示——git 本来就把它们当二进制,没有可转的文字。
+- 特别大的文件(变更超过 2 万行,或超过 1MB)只显示行数统计,不显示具体内容。这和 Hunk 自带的行为一致。
+- 合并提交的 diff 内容能正常转码,但在"不带交互界面"的运行方式下不显示,请正常打开 hunk 看。
+- `hunk patch 补丁文件` 完全不经过本扩展,所以补丁文件本身不会被转码。
 
 ## 开发
 
 ```bash
-bun install          # 无运行时依赖;类型已 vendored
-bun run test         # bun test test/ —— 163 用例,含 fixture 仓库集成测试
-bunx tsc --noEmit    # 除 bun-init 模板 examples/ 外零报错
+bun install       # 装依赖(运行时零依赖,类型文件已经内置在仓库里)
+bun run test      # 跑测试:163 个用例,包括真实 git 仓库的集成测试
+bunx tsc --noEmit # 类型检查,零报错
 ```
 
-`types/hunkdiff-extension/` vendored 了钉住宿主 API(v25)的官方类型与运行时;`test/runtime.ts` 在真实宿主之外把 `hunkdiff/extension` 映射过去。fixture 仓库(`test/fixtures.ts`)提交的是精确的旧编码字节,每个解码结果都被钉死。
+测试用的 git 仓库里提交的都是真实的 GBK、日文、繁体字节,所以每个解码结果都是可复现、可对照的。
 
-## 环境备注:bun 全局更新的部分替换问题
+## 环境备注(bun):全局更新的坑
 
-`bun add -g hunkdiff` 升级时可能只替换 `package.json` 等文件,不替换硬链接的预编译二进制(现象:包显示 0.22.0 但 `hunk --version` 报 0.21.1、加载扩展报 API v16),也不会刷新 optional/peer 依赖(如 `@opentui/core` 停在旧版导致 `Symbol "createEmbeddedTerminal" not found`)。遇到时彻底重装:
+用 `bun add -g hunkdiff` 升级 Hunk 时,bun 有个毛病:可能只更新了 package.json 这类小文件,却**没换掉那个一百多 MB 的 hunk.exe**(文件是硬链接的,它还连着旧版本)。结果就是:包明明显示 0.22.0,`hunk --version` 却报 0.21.1,装扩展时报"API v16"。同时,`@opentui/core` 这类依赖也可能停在旧版,报 `Symbol "createEmbeddedTerminal" not found`。
+
+遇到这种情况,彻底重装一次就好:
 
 ```bash
 bun remove -g hunkdiff && rm -rf ~/.bun/install/global/node_modules/hunkdiff-windows-x64* && bun add -g hunkdiff
 ```
 
-详情见 `docs/custom-encoding-implementation-plan.md` 的"宿主环境要求"一节。
+来龙去脉见 `docs/custom-encoding-implementation-plan.md` 的"宿主环境要求"一节。
