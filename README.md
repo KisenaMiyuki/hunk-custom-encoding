@@ -32,11 +32,7 @@ Merge-commit reviews (`diff --cc`) transcode their two-sign-column content lines
 ## Install & trust
 
 ```bash
-# user-level (implicitly trusted, loads immediately)
-git clone <this-repo> ~/.config/hunk/extensions/hunk-custom-encoding
-
-# or repo-level (trust prompt on first use)
-git clone <this-repo> <repo>/.hunk/extensions/hunk-custom-encoding
+hunk extension install KisenaMiyuki/hunk-custom-encoding
 ```
 
 The manifest pins `"hunk": { "apiVersion": 25 }` — older Hunk binaries refuse the folder with a clear message. `hunk --no-extensions` turns the extension off for one run (Hunk's bundled backends stay loaded).
