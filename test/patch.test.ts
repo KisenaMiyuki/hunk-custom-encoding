@@ -371,3 +371,77 @@ describe("transcodePatch — framing", () => {
     expect(text.split("diff --git ").length).toBe(5); // 4 segments + trailing split
   });
 });
+
+// ---------------------------------------------------------------------------
+// ANSI (colorMoved) — git paints structural lines under --color=always (Q4)
+// ---------------------------------------------------------------------------
+
+const E = "\u001b[";
+
+/** One git-painted structural line: bold paint, content, reset. */
+const paint = (code: string, visible: string) => `${E}${code}m${visible}${E}m\n`;
+
+/** What `git show --color=always --color-moved=zebra` emits for a GBK file. */
+const ANSI_GBK_SECTION = patch(
+  paint("1", "diff --git a/legacy.txt b/legacy.txt"),
+  paint("1", "new file mode 100644"),
+  paint("1", "index 0000000..abf3520"),
+  paint("1", "--- /dev/null"),
+  paint("1", "+++ b/legacy.txt"),
+  paint("36", "@@ -0,0 +1 @@"),
+  patch(`${E}32m+${E}m${E}32m`, GBK_NEIRONG_NEW, `${E}m\n`),
+);
+
+describe("transcodePatch — ANSI structural lines (colorMoved)", () => {
+  test("colored segment headers still open a transcoded segment", () => {
+    const text = transcodePatch(ANSI_GBK_SECTION, defaults);
+    // git paints the sign and the content in separate spans:
+    // `ESC[32m+ESC[m ESC[32m新内容ESC[m` — assert them separately.
+    expect(text).toContain("\u001b[32m+\u001b[m");
+    expect(text).toContain("新内容");
+    expect(text).not.toContain("\uFFFD");
+    // The paint itself survives (Q4 passthrough).
+    expect(text).toContain("\u001b[32m");
+    expect(text).toContain("\u001b[1mdiff --git a/legacy.txt b/legacy.txt\u001b[m");
+  });
+
+  test("colored two-sided hunks decode both sides", () => {
+    const bytes = patch(
+      paint("1", "diff --git a/gbk.txt b/gbk.txt"),
+      paint("1", "index 3333333..4444444 100644"),
+      paint("1", "--- a/gbk.txt"),
+      paint("1", "+++ b/gbk.txt"),
+      paint("36", "@@ -1,2 +1,2 @@"),
+      patch(`${E}31m-`, GBK_OLD, `${E}m\n`),
+      patch(`${E}32m+`, GBK_NEW, `${E}m\n`),
+      patch(`${E}36m `, GBK_CONTEXT, `${E}m\n`),
+    );
+    const text = transcodePatch(bytes, defaults);
+    expect(text).toContain("-旧中文");
+    expect(text).toContain("+新中文");
+    expect(text).toContain(" 上下文");
+    expect(text).not.toContain("\uFFFD");
+  });
+
+  test("overrides still match through colored +++ headers", () => {
+    const settings = parseExtensionSettings({ overrides: { "legacy.txt": "latin1" } });
+    const text = transcodePatch(ANSI_GBK_SECTION, settings);
+    // The override proved the file path was extracted under ANSI painting:
+    // GBK bytes decode as windows-1252 instead of the default GBK probe.
+    expect(text).toContain(
+      new TextDecoder("windows-1252").decode(GBK_NEIRONG_NEW),
+    );
+    expect(text).not.toContain("新内容");
+  });
+
+  test("unterminated escape-only lines do not crash classification", () => {
+    const bytes = patch(
+      "diff --git a/x.txt b/x.txt\n",
+      "@@ -1,1 +1,1 @@\n",
+      "+a\n",
+      "\u001b[3", // truncated CSI at end of stream
+    );
+    const text = transcodePatch(bytes, defaults);
+    expect(text).toContain("+a");
+  });
+});

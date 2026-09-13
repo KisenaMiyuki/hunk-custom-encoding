@@ -182,3 +182,68 @@ export function buildUtf8OnlyRepo(): FixtureRepo {
     throw error;
   }
 }
+
+/**
+ * Revision-show / stash-show repository (M3):
+ *
+ *   - first commit = root commit (no parent — show must degrade the old
+ *     source side to `null`);
+ *   - second commit = HEAD: rewrites `gbk.txt` and adds `added-gbk.txt`;
+ *   - one stash (`stash@{0}`) holding an unstaged GBK rewrite of `gbk.txt`,
+ *     so the worktree is clean afterwards.
+ */
+export interface ShowFixtureRepo {
+  root: string;
+  /** First commit (root commit, no parent). */
+  rootSha: string;
+  /** Second commit (HEAD of `main`). */
+  headSha: string;
+  cleanup(): void;
+}
+
+export function buildShowRepo(): ShowFixtureRepo {
+  const root = mkdtempSync(join(tmpdir(), "hunk-enc-show-"));
+  try {
+    const path = (name: string) => join(root, name);
+
+    runGit(root, ["init", "-q", "-b", "main"]);
+
+    // ---- first commit: root commit --------------------------------------
+    writeFileSync(path("gbk.txt"), GBK_JIUNR); // 旧内容
+    writeFileSync(path("utf8.txt"), Buffer.from("v1\n"));
+    commitAll(root, "first");
+    const rootSha = gitOut(root, ["rev-parse", "HEAD"]);
+
+    // ---- second commit: GBK rewrite + BIG5 new file ----------------------
+    writeFileSync(path("gbk.txt"), GBK_XINNR); // 新内容
+    writeFileSync(path("added-gbk.txt"), BIG5_CESHI); // 測試
+    commitAll(root, "second");
+    const headSha = gitOut(root, ["rev-parse", "HEAD"]);
+
+    // ---- stashed unstaged rewrite of gbk.txt -----------------------------
+    writeFileSync(path("gbk.txt"), GBK_JIUZW); // 旧中文
+    runGit(root, [
+      "-c",
+      "user.name=fixture",
+      "-c",
+      "user.email=fixture@example.test",
+      "stash",
+      "push",
+      "-q",
+      "-m",
+      "wip",
+    ]);
+
+    return {
+      root,
+      rootSha,
+      headSha,
+      cleanup() {
+        rmSync(root, { recursive: true, force: true });
+      },
+    };
+  } catch (error) {
+    rmSync(root, { recursive: true, force: true });
+    throw error;
+  }
+}

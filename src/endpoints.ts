@@ -8,7 +8,14 @@
  */
 
 import type { ExtensionVcsDiffInput } from "hunkdiff/extension";
-import { commandLabel, requireGitDiffRangeArg, runGitText } from "./git";
+import {
+  commandLabel,
+  isUnknownRevisionMessage,
+  requireGitDiffRangeArg,
+  runGitBytes,
+  runGitText,
+  translateGitExitFailure,
+} from "./git";
 
 /** One endpoint kind the adapter can read exact source from. */
 export type GitDiffEndpoint =
@@ -55,6 +62,7 @@ async function resolveRangeRevisions(
     cwd: options.repoRoot,
     signal: options.signal,
     label: commandLabel(input),
+    errorContext: input,
   });
   const revs = text
     .split("\n")
@@ -66,26 +74,31 @@ async function resolveRangeRevisions(
   };
 }
 
-/** Resolve one commit-ish ref, or null when the ref does not exist. */
+/** Resolve one commit-ish ref, or null when the ref is unborn/unresolvable. */
 async function tryResolveCommitRef(
   input: ExtensionVcsDiffInput,
   ref: string,
   options: ResolveEndpointsOptions,
 ): Promise<string | null> {
-  try {
-    const text = await runGitText({
-      args: ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`],
-      cwd: options.repoRoot,
-      signal: options.signal,
-      label: commandLabel(input),
-      acceptedExitCodes: [0, 1, 128],
-    });
-    const first = text.split("\n")[0]?.trim() ?? "";
-    return first || null;
-  } catch (error) {
-    if (options.signal?.aborted) throw error;
-    return null; // unborn branch / unresolvable ref
+  const result = await runGitBytes({
+    args: ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`],
+    cwd: options.repoRoot,
+    signal: options.signal,
+    label: commandLabel(input),
+    errorContext: input,
+    acceptedExitCodes: [0, 1, 128],
+  });
+  if (result.exitCode === 0) {
+    return Buffer.from(result.stdout).toString("utf8").split("\n")[0]?.trim() || null;
   }
+  // Built-in rule: unknown-revision failures mean the ref is unborn (or
+  // unresolvable) and degrade to null; anything else is a real failure and
+  // surfaces through the per-kind translation (built-in staged-branch rule).
+  const stderr = result.stderrText.trim();
+  if (stderr && !isUnknownRevisionMessage(stderr)) {
+    throw translateGitExitFailure(input, stderr);
+  }
+  return null;
 }
 
 /**
@@ -102,7 +115,7 @@ export async function resolveGitDiffEndpoints(
   const { cwd, repoRoot, signal } = options;
   const label = commandLabel(input);
   const run = (args: string[], acceptedExitCodes: number[] = [0]) =>
-    runGitText({ args, cwd: repoRoot, signal, label, acceptedExitCodes });
+    runGitText({ args, cwd: repoRoot, signal, label, acceptedExitCodes, errorContext: input });
 
   const range = requireGitDiffRangeArg(input);
 

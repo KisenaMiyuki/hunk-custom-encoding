@@ -13,8 +13,12 @@
  *      added-file diffs from its own UTF-8 reads, which would re-introduce
  *      mojibake (ADR-0002).
  *
- * `revision-show` / `stash-show` / `watchSignature` / `colorMoved` are M3;
- * `history` stays unimplemented (Q6 — `hunk log` reports "not supported").
+ * `revision-show` / `stash-show` / `watchSignature` / `colorMoved` follow the
+ * built-in shapes (M3, plan §6.3-6.5) with the same byte-mode difference:
+ * every patch runs git raw and passes through the M1 transcode pipeline.
+ * `history` stays unimplemented (Q6 — `hunk log` reports "not supported"),
+ * `watchPlan` stays out (poll-only fallback), and the `review` commit
+ * descriptor is deferred to M4 (title alone still renders fine).
  */
 
 import fs from "node:fs";
@@ -29,6 +33,8 @@ import {
   type ExtensionVcsFileSourceResult,
   type ExtensionVcsLoadContext,
   type ExtensionVcsPatchResult,
+  type ExtensionVcsShowInput,
+  type ExtensionVcsStashShowInput,
 } from "hunkdiff/extension";
 import {
   LARGE_DIFF_FILE_MAX_BYTES,
@@ -37,13 +43,18 @@ import {
   buildGitDiffArgs,
   buildGitDiffNumstatArgs,
   buildGitNoIndexDiffArgs,
+  buildGitShowArgs,
+  buildGitStashShowArgs,
   buildGitStatusArgs,
   commandLabel,
   parseGitNumstat,
   parseUntrackedFilePaths,
+  resolveGitColorMovedOptions,
+  resolveGitCommitRef,
   runGitBytes,
   runGitText,
 } from "./git";
+import type { GitBackedInput } from "./git";
 import { resolveGitDiffEndpoints, type GitDiffEndpoint, type GitDiffEndpoints } from "./endpoints";
 import { transcodePatch } from "./patch";
 import { detectEncoding, isLikelyBinary, transcode } from "./transcode";
@@ -88,8 +99,45 @@ export function detectGitRepo(cwd: string): { id: string; repoRoot: string } | n
   }
 }
 
-async function resolveGitRepoRoot(
+/**
+ * Discover repo-root-relative untracked paths for one review: the porcelain
+ * status gate (staged / `--exclude-untracked` / non-worktree new side all
+ * exclude), then the built-in reviewability filter (ADR-0002). Callers that
+ * already resolved endpoints pass them in; the watch path lets this helper
+ * resolve them itself.
+ */
+async function collectUntrackedPaths(
   input: ExtensionVcsDiffInput,
+  repoRoot: string,
+  context: { cwd: string; signal?: AbortSignal },
+  endpoints?: GitDiffEndpoints | null,
+): Promise<string[]> {
+  if (input.staged || input.options.excludeUntracked === true) return [];
+
+  const resolved =
+    endpoints !== undefined
+      ? endpoints
+      : await resolveGitDiffEndpoints(input, {
+          cwd: context.cwd,
+          repoRoot,
+          signal: context.signal,
+        });
+  if (!resolved || resolved.new.kind !== "worktree") return [];
+
+  const statusText = await runGitText({
+    args: buildGitStatusArgs(input),
+    cwd: context.cwd,
+    signal: context.signal,
+    label: commandLabel(input),
+    errorContext: input,
+  });
+  return parseUntrackedFilePaths(statusText).filter((filePath) =>
+    isReviewableUntrackedPath(repoRoot, filePath),
+  );
+}
+
+async function resolveGitRepoRoot(
+  input: GitBackedInput,
   options: { cwd: string; signal?: AbortSignal },
 ): Promise<string> {
   const text = await runGitText({
@@ -97,8 +145,26 @@ async function resolveGitRepoRoot(
     cwd: options.cwd,
     signal: options.signal,
     label: commandLabel(input),
+    errorContext: input,
   });
   return normalizeRepoPath(text.trim());
+}
+
+/* -------------------------------------------------------------------------- */
+/* Watch signatures (M3, plan §6.5 — built-in shapes, transcoded text)         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Format one file stat into a stable signature fragment, or mark the path
+ * missing (built-in `statSignature` replica). The fragments feed the
+ * working-tree watch signature so new/deleted untracked files trip `--watch`.
+ */
+export function statSignature(path: string): string {
+  if (!fs.existsSync(path)) {
+    return `${path}:missing`;
+  }
+  const stat = fs.statSync(path);
+  return `${path}:${stat.size}:${stat.mtimeMs}:${stat.ino}`;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -392,6 +458,176 @@ function configFingerprint(settings: ExtensionSettings): string {
 }
 
 /* -------------------------------------------------------------------------- */
+/* revision-show (M3, plan §6.3)                                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Commit review: `git show <id>` in byte mode, then the shared transcode
+ * pipeline. The exact-source reader pins both sides to the reviewed commit
+ * (`<id>^` ↔ `<id>`, built-in revision semantics — a root commit's old side
+ * degrades to `null` when Git cannot resolve the parent blob).
+ */
+async function loadRevisionShow(
+  input: ExtensionVcsShowInput,
+  context: ExtensionVcsLoadContext,
+  settings: ExtensionSettings,
+): Promise<ExtensionVcsPatchResult> {
+  const { cwd, signal } = context;
+  const label = commandLabel(input);
+
+  const repoRoot = await resolveGitRepoRoot(input, { cwd, signal });
+  const repoName = repoRoot.split(/[\\/]/).filter(Boolean).pop() ?? repoRoot;
+
+  const revisionId = await resolveGitCommitRef(input, input.ref ?? "HEAD", {
+    cwd: repoRoot,
+    signal,
+  });
+
+  const capability = await buildSourceCapability(repoRoot, settings, {
+    old: { kind: "git-ref", ref: `${revisionId}^` },
+    new: { kind: "git-ref", ref: revisionId },
+  });
+
+  const colorMoved = await resolveGitColorMovedOptions(input, { cwd, signal });
+  const patchResult = await runGitBytes({
+    // Patch args use the resolved commit id, so titles quote what the user
+    // typed while diffs and source reads agree on the same commit.
+    args: buildGitShowArgs({ ...input, ref: revisionId }, colorMoved),
+    cwd,
+    signal,
+    label,
+    errorContext: input,
+  });
+
+  return {
+    repoRoot,
+    sourceLabel: repoRoot,
+    title: input.ref ? `${repoName} show ${input.ref}` : `${repoName} show HEAD`,
+    patchText: transcodePatch(patchResult.stdout, settings),
+    ...capability,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* stash-show (M3, plan §6.4)                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Stash review: `git stash show -p [<ref>]` in byte mode, then the shared
+ * transcode pipeline. The exact-source reader pins to the stash's commit
+ * (`<id>^` ↔ `<id>`), mirroring the built-in's revision source capability.
+ */
+async function loadStashShow(
+  input: ExtensionVcsStashShowInput,
+  context: ExtensionVcsLoadContext,
+  settings: ExtensionSettings,
+): Promise<ExtensionVcsPatchResult> {
+  const { cwd, signal } = context;
+  const label = commandLabel(input);
+
+  const repoRoot = await resolveGitRepoRoot(input, { cwd, signal });
+  const repoName = repoRoot.split(/[\\/]/).filter(Boolean).pop() ?? repoRoot;
+
+  const revisionId = await resolveGitCommitRef(input, input.ref ?? "stash@{0}", {
+    cwd: repoRoot,
+    signal,
+  });
+
+  const capability = await buildSourceCapability(repoRoot, settings, {
+    old: { kind: "git-ref", ref: `${revisionId}^` },
+    new: { kind: "git-ref", ref: revisionId },
+  });
+
+  const colorMoved = await resolveGitColorMovedOptions(input, { cwd, signal });
+  const patchResult = await runGitBytes({
+    args: buildGitStashShowArgs(input, colorMoved),
+    cwd,
+    signal,
+    label,
+    errorContext: input,
+  });
+
+  return {
+    repoRoot,
+    sourceLabel: repoRoot,
+    title: input.ref ? `${repoName} stash ${input.ref}` : `${repoName} stash`,
+    patchText: transcodePatch(patchResult.stdout, settings),
+    ...capability,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Watch signatures (M3, plan §6.5)                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Working-tree watch fingerprint (built-in shape): the transcoded patch plus
+ * one `untracked:` stat fragment per untracked file, joined with `\n---\n`.
+ * Signing the transcoded text means encoding-config changes trip `--watch`
+ * too (Q5). Always `--no-color` and lock-free; Hunk polls this on a timer
+ * (no watchPlan — the poll fallback is the M3 contract).
+ */
+async function watchWorkingTreeSignature(
+  input: ExtensionVcsDiffInput,
+  context: ExtensionVcsLoadContext,
+  settings: ExtensionSettings,
+): Promise<string> {
+  const { cwd, signal } = context;
+
+  const patchResult = await runGitBytes({
+    args: buildGitDiffArgs(input),
+    cwd,
+    signal,
+    preventOptionalLocks: true,
+    label: commandLabel(input),
+    errorContext: input,
+  });
+  const patchText = transcodePatch(patchResult.stdout, settings);
+
+  const repoRoot = await resolveGitRepoRoot(input, { cwd, signal });
+  const untrackedPaths = await collectUntrackedPaths(input, repoRoot, { cwd, signal });
+  const untrackedSignatures = untrackedPaths.map(
+    (filePath) => `untracked:${statSignature(join(repoRoot, filePath))}`,
+  );
+
+  return [patchText, ...untrackedSignatures].join("\n---\n");
+}
+
+/** Commit review fingerprint: the transcoded `git show` text (built-in shape). */
+async function watchRevisionShowSignature(
+  input: ExtensionVcsShowInput,
+  context: ExtensionVcsLoadContext,
+  settings: ExtensionSettings,
+): Promise<string> {
+  const patchResult = await runGitBytes({
+    args: buildGitShowArgs(input),
+    cwd: context.cwd,
+    signal: context.signal,
+    preventOptionalLocks: true,
+    label: commandLabel(input),
+    errorContext: input,
+  });
+  return transcodePatch(patchResult.stdout, settings);
+}
+
+/** Stash review fingerprint: the transcoded `git stash show -p` text. */
+async function watchStashShowSignature(
+  input: ExtensionVcsStashShowInput,
+  context: ExtensionVcsLoadContext,
+  settings: ExtensionSettings,
+): Promise<string> {
+  const patchResult = await runGitBytes({
+    args: buildGitStashShowArgs(input),
+    cwd: context.cwd,
+    signal: context.signal,
+    preventOptionalLocks: true,
+    label: commandLabel(input),
+    errorContext: input,
+  });
+  return transcodePatch(patchResult.stdout, settings);
+}
+
+/* -------------------------------------------------------------------------- */
 /* working-tree-diff load                                                      */
 /* -------------------------------------------------------------------------- */
 
@@ -411,16 +647,16 @@ async function loadWorkingTreeDiff(
   // (no range, or a range resolving to one positive revision and no
   // negatives — the built-in's isWorkingTreeGitDiffInput rule).
   const endpoints = await resolveGitDiffEndpoints(input, { cwd, repoRoot, signal });
-  const includeUntracked =
-    input.options.excludeUntracked !== true && endpoints?.new.kind === "worktree";
 
   // Stats before the patch so files too large to render are excluded from
-  // the diff instead of generating output nobody reads (R1).
+  // the diff instead of generating output nobody reads (R1). Always
+  // `--no-color` (plan §6.5): move classes only matter in the patch.
   const numstatText = await runGitText({
     args: buildGitDiffNumstatArgs(input),
     cwd,
     signal,
     label,
+    errorContext: input,
   });
   const largeTrackedFiles = parseGitNumstat(numstatText).filter((file) => {
     if (file.additions + file.deletions > LARGE_DIFF_FILE_MAX_LINES) return true;
@@ -431,15 +667,21 @@ async function loadWorkingTreeDiff(
     }
   });
 
+  // Moved-line configuration (M3, plan §6.5): git config wins, the review's
+  // `--color-moved` flag is the fallback, and disabled reviews stay plain.
+  const colorMoved = await resolveGitColorMovedOptions(input, { cwd, signal });
+
   // Main patch — byte mode, then the shared transcode pipeline (ADR-0001).
   const patchResult = await runGitBytes({
     args: buildGitDiffArgs(
       input,
       largeTrackedFiles.map((file) => file.path),
+      colorMoved,
     ),
     cwd,
     signal,
     label,
+    errorContext: input,
   });
   const patchText = transcodePatch(patchResult.stdout, settings);
 
@@ -453,16 +695,8 @@ async function loadWorkingTreeDiff(
     }),
   );
 
-  if (includeUntracked) {
-    const statusText = await runGitText({
-      args: buildGitStatusArgs(input),
-      cwd,
-      signal,
-      label,
-    });
-    const untrackedPaths = parseUntrackedFilePaths(statusText).filter((filePath) =>
-      isReviewableUntrackedPath(repoRoot, filePath),
-    );
+  if (endpoints?.new.kind === "worktree") {
+    const untrackedPaths = await collectUntrackedPaths(input, repoRoot, { cwd, signal }, endpoints);
     for (const filePath of untrackedPaths) {
       const entry = await buildUntrackedExtraFile(repoRoot, filePath, settings, signal);
       if (entry) extraFiles.push(entry);
@@ -507,8 +741,16 @@ export function createEncodingGitAdapter(settings: ExtensionSettings): Extension
     operations: {
       "working-tree-diff": {
         load: (input, context) => loadWorkingTreeDiff(input, context, settings),
+        watchSignature: (input, context) => watchWorkingTreeSignature(input, context, settings),
       },
-      // "revision-show" / "stash-show": M3 (plan §6.3/6.4).
+      "revision-show": {
+        load: (input, context) => loadRevisionShow(input, context, settings),
+        watchSignature: (input, context) => watchRevisionShowSignature(input, context, settings),
+      },
+      "stash-show": {
+        load: (input, context) => loadStashShow(input, context, settings),
+        watchSignature: (input, context) => watchStashShowSignature(input, context, settings),
+      },
     },
     // history stays unimplemented (Q6): `hunk log` reports "not supported".
   };

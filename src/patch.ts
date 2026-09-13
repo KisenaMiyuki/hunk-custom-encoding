@@ -11,7 +11,10 @@
  *   - content lines (content 行, `+` / `-` / space prefixed): decoded with
  *     the encoding probed from that segment's content bytes. ANSI escape
  *     sequences (colorMoved, M3) are ASCII and survive legacy decoders
- *     untouched (Q4).
+ *     untouched (Q4) — and because git paints *structural* lines under
+ *     `--color=always` as well, every prefix match (segment headers, `@@`
+ *     hunk headers, `+++`/`---` file headers) skips leading ANSI escapes
+ *     before matching.
  *
  * Binary segments and combined (`diff --cc`) segments pass through with
  * plain UTF-8 decoding — the same bytes the built-in adapter would hand to
@@ -23,6 +26,7 @@ import {
   UTF8_ENCODING,
   detectEncoding,
   isPureAscii,
+  stripAnsiEscapes,
   transcode,
 } from "./transcode";
 
@@ -66,11 +70,10 @@ function asciiStartsWith(line: Uint8Array, prefix: string): boolean {
 }
 
 /**
- * First classification byte of a line, skipping leading ANSI CSI escapes
- * (colorMoved wraps whole lines: `ESC[36m+content ESC[m`).
- * Returns -1 when the line is only (unterminated) escapes.
+ * Byte index of the first non-ANSI-escape byte, skipping leading CSI
+ * sequences (`ESC[...m`). Returns -1 when the line is only escapes.
  */
-function firstContentByte(line: Uint8Array): number {
+function ansiSkipIndex(line: Uint8Array): number {
   let i = 0;
   while (i + 1 < line.length && line[i] === ESC && line[i + 1] === LEFT_BRACKET) {
     let j = i + 2;
@@ -78,7 +81,33 @@ function firstContentByte(line: Uint8Array): number {
     if (j >= line.length) return -1;
     i = j + 1;
   }
-  return i < line.length ? line[i]! : -1;
+  return i < line.length ? i : -1;
+}
+
+/**
+ * ASCII prefix match on the *visible* bytes, skipping leading ANSI escapes
+ * (Q4): under `--color=always` git paints every structural line too —
+ * `ESC[1mdiff --git …ESC[m`, `ESC[36m@@ …ESC[m`, `ESC[1m+++ …ESC[m` — so
+ * plain byte matching would misfile whole segments as passthrough prelude.
+ */
+function visibleStartsWith(line: Uint8Array, prefix: string): boolean {
+  const start = ansiSkipIndex(line);
+  if (start < 0) return false;
+  if (line.length - start < prefix.length) return false;
+  for (let i = 0; i < prefix.length; i++) {
+    if (line[start + i] !== prefix.charCodeAt(i)) return false;
+  }
+  return true;
+}
+
+/**
+ * First classification byte of a line, skipping leading ANSI CSI escapes
+ * (colorMoved wraps whole lines: `ESC[36m+content ESC[m`).
+ * Returns -1 when the line is only (unterminated) escapes.
+ */
+function firstContentByte(line: Uint8Array): number {
+  const start = ansiSkipIndex(line);
+  return start < 0 ? -1 : line[start]!;
 }
 
 type ContentClass = "content" | "noeol" | "other";
@@ -101,9 +130,9 @@ function extractTargetPath(lines: readonly Uint8Array[]): string | null {
   let plus: string | null = null;
   let minus: string | null = null;
   for (const line of lines) {
-    if (plus === null && asciiStartsWith(line, PLUS_FILE_PREFIX)) {
+    if (plus === null && visibleStartsWith(line, PLUS_FILE_PREFIX)) {
       plus = parsePathLine(line, PLUS_FILE_PREFIX.length);
-    } else if (minus === null && asciiStartsWith(line, MINUS_FILE_PREFIX)) {
+    } else if (minus === null && visibleStartsWith(line, MINUS_FILE_PREFIX)) {
       minus = parsePathLine(line, MINUS_FILE_PREFIX.length);
     }
     if (plus !== null && minus !== null) break;
@@ -113,8 +142,15 @@ function extractTargetPath(lines: readonly Uint8Array[]): string | null {
   return null;
 }
 
+/**
+ * Decode the visible text of one file-header line after `offset` characters
+ * of visible content. ANSI escapes are stripped first, so colorMoved paint
+ * (`ESC[1m+++ b/pESC[m`) leaves only the real path text — the trailing reset
+ * escape would otherwise glue itself onto the path and break overrides.
+ * Raw 0x1b never appears in real paths: `core.quotePath` octal-escapes them.
+ */
 function parsePathLine(line: Uint8Array, offset: number): string | null {
-  let text = lineToText(line).slice(offset);
+  let text = lineToText(stripAnsiEscapes(line)).slice(offset);
   const tab = text.indexOf("\t");
   if (tab >= 0) text = text.slice(0, tab);
   // core.quotePath quotes paths containing non-ASCII bytes.
@@ -164,7 +200,7 @@ function transcodeNormalSection(
   // Locate the first hunk header; everything from there on is hunk body.
   let firstHunk = -1;
   for (let i = 0; i < lines.length; i++) {
-    if (asciiStartsWith(lines[i]!, HUNK_HEADER_PREFIX)) {
+    if (visibleStartsWith(lines[i]!, HUNK_HEADER_PREFIX)) {
       firstHunk = i;
       break;
     }
@@ -232,7 +268,7 @@ export function transcodePatch(
 
   // Walk the segments.
   while (cursor < lines.length) {
-    const kind = asciiStartsWith(lines[cursor]!, DIFF_GIT_PREFIX)
+    const kind = visibleStartsWith(lines[cursor]!, DIFF_GIT_PREFIX)
       ? "normal"
       : "combined";
     let end = cursor + 1;
@@ -253,9 +289,9 @@ export function transcodePatch(
 
 function isSectionHeader(line: Uint8Array): boolean {
   return (
-    asciiStartsWith(line, DIFF_GIT_PREFIX) ||
-    asciiStartsWith(line, DIFF_CC_PREFIX) ||
-    asciiStartsWith(line, DIFF_COMBINED_PREFIX)
+    visibleStartsWith(line, DIFF_GIT_PREFIX) ||
+    visibleStartsWith(line, DIFF_CC_PREFIX) ||
+    visibleStartsWith(line, DIFF_COMBINED_PREFIX)
   );
 }
 
