@@ -1,20 +1,22 @@
 # hunk-custom-encoding
 
-Per-file encoding transcoding for [Hunk](https://hunk.dev)'s Git reviews. Non-UTF-8 repositories — GBK, Big5, Shift-JIS and friends — render as proper text instead of mojibake, with zero changes to the repository under review.
+ English · **[中文](./README.zh-CN.md)**
 
-The extension registers a VCS adapter (`hunk-custom-encoding`) that wraps Git byte-exactly: every patch-producing `git` command runs with raw byte stdout, and the extension transcodes the patch content to UTF-8 segment by segment before handing it to Hunk. Pure-UTF-8 repositories are byte-identical to the built-in adapter.
+Per-file encoding transcoding for [Hunk](https://hunk.dev)'s Git reviews: non-UTF-8 repositories — GBK, Big5, Shift-JIS and friends — render as proper text instead of mojibake, with zero changes to the repository under review.
 
-## Why not `.gitattributes working-tree-encoding`?
+## Overview
 
-Git's native answer re-encodes files **on checkout**: the working copy is rewritten, the index churns, and other tools that don't know about the attribute see different bytes. This extension takes the read-only route instead:
+The extension registers a VCS adapter (`hunk-custom-encoding`) that wraps Git byte-exactly: every patch-producing `git` command runs with raw byte stdout, and patch content is transcoded to UTF-8 segment by segment before Hunk sees it. Pure-UTF-8 repositories are byte-identical to the built-in adapter, and nothing in the reviewed repository is ever rewritten — detection and decoding happen per review.
 
-- no working-tree or index changes — detection and decoding happen per review;
-- no per-repo setup; the same configuration covers every legacy repo you review;
-- per-file `overrides` for repos with mixed encodings, which a single repo-wide attribute cannot express.
+## Install
 
-If you already use `working-tree-encoding` and it works for you, keep it — the extension is an alternative, not a prerequisite.
+```bash
+hunk extension install KisenaMiyuki/hunk-custom-encoding
+```
 
-## Commands covered
+The manifest pins `"hunk": { "apiVersion": 25 }` — older Hunk binaries refuse the folder with a clear message. `hunk --no-extensions` turns the extension off for one run (Hunk's bundled backends stay loaded).
+
+## Usage
 
 | Command | Status | Notes |
 | --- | --- | --- |
@@ -29,13 +31,15 @@ If you already use `working-tree-encoding` and it works for you, keep it — the
 
 Merge-commit reviews (`diff --cc`) transcode their two-sign-column content lines too.
 
-## Install & trust
+## Why not `.gitattributes working-tree-encoding`?
 
-```bash
-hunk extension install KisenaMiyuki/hunk-custom-encoding
-```
+Git's native answer re-encodes files **on checkout**: the working copy is rewritten, the index churns, and other tools that don't know about the attribute see different bytes. This extension takes the read-only route instead:
 
-The manifest pins `"hunk": { "apiVersion": 25 }` — older Hunk binaries refuse the folder with a clear message. `hunk --no-extensions` turns the extension off for one run (Hunk's bundled backends stay loaded).
+- no working-tree or index changes — detection and decoding happen per review;
+- no per-repo setup; the same configuration covers every legacy repo you review;
+- per-file `overrides` for repos with mixed encodings, which a single repo-wide attribute cannot express.
+
+If you already use `working-tree-encoding` and it works for you, keep it — the extension is an alternative, not a prerequisite.
 
 ## Configuration
 
@@ -68,18 +72,8 @@ Repo config overrides user config **key by key** — a reviewed repository can r
 
 ```bash
 bun install          # no runtime dependencies; types are vendored
-bun run test         # bun test test/ — 156 cases incl. fixture-repo integration
+bun run test         # bun test test/ — 163 cases incl. fixture-repo integration
 bunx tsc --noEmit    # clean except the bun-init template in examples/
 ```
 
 `types/hunkdiff-extension/` vendors the official extension types and runtime for the pinned host API (v25); `test/runtime.ts` maps `hunkdiff/extension` to it outside the real host. Fixture repos (`test/fixtures.ts`) commit exact legacy bytes so every decode is pinned.
-
-## 环境备注:bun 全局更新的部分替换问题
-
-`bun add -g hunkdiff` 升级时可能只替换 `package.json` 等文件,不替换硬链接的预编译二进制(现象:包显示 0.22.0 但 `hunk --version` 报 0.21.1、加载扩展报 API v16),也不会刷新 optional/peer 依赖(如 `@opentui/core` 停在旧版导致 `Symbol "createEmbeddedTerminal" not found`)。遇到时彻底重装:
-
-```bash
-bun remove -g hunkdiff && rm -rf ~/.bun/install/global/node_modules/hunkdiff-windows-x64* && bun add -g hunkdiff
-```
-
-详情见 `docs/custom-encoding-implementation-plan.md` 的"宿主环境要求"一节。
